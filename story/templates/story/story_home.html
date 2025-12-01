@@ -1,0 +1,67 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>스토리 시작하기</title>
+    <style>
+        body { font-family: 'Inter', Arial, sans-serif; background-color: #f0f4f8; color: #334155; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .container { 
+            width: 100%;
+            max-width: 500px; 
+            background: white; 
+            padding: 40px; 
+            border-radius: 16px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08); 
+            border: 1px solid #e2e8f0;
+            text-align: center;
+        }
+        h1 { color: #4f46e5; margin-bottom: 30px; font-size: 2em; }
+        .btn-decision { 
+            display: block; 
+            width: 100%; 
+            padding: 15px; 
+            font-size: 1.2em; 
+            margin-bottom: 20px; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            transition: background-color 0.3s; 
+            color: white; 
+            font-weight: 700;
+            text-decoration: none; /* <a> 태그의 밑줄 제거 */
+        }
+        .btn-play { background-color: #007bff; }
+        .btn-play:hover { background-color: #0056b3; }
+        .btn-create { background-color: #28a745; }
+        .btn-create:hover { background-color: #1e7e34; }
+        .alert { padding: 15px; background-color: #f0f4f8; border: 1px solid #9ca3af; color: #334155; border-radius: 4px; margin-bottom: 20px; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>스토리 시작하기</h1>
+
+        {% if story_exists %}
+            <p style="margin-bottom: 30px;">기존에 생성된 스토리가 있습니다. 어떤 작업을 하시겠습니까?</p>
+            
+            <a href="{% url 'story-play' %}?node_id=1" class="btn-decision btn-play">
+                ▶ 기존 스토리 이어서 플레이
+            </a>
+            
+            <a href="{% url 'story-creator' %}" class="btn-decision btn-create">
+                🆕 새로운 스토리 생성
+            </a>
+        {% else %}
+            <div class="alert">
+                <p>아직 생성된 스토리가 없습니다. 새로운 스토리를 만들어 주세요.</p>
+            </div>
+            
+            <a href="{% url 'story-creator' %}" class="btn-decision btn-create">
+                🆕 새로운 스토리 생성 시작
+            </a>
+        {% endif %}
+    </div>
+</body>
+</html>

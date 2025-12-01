@@ -1,0 +1,14 @@
+# 환경 변수
+.env
+
+# Django / Python에서 보통 빼는 것들
+db.sqlite3
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# 기타
+/static/
+media/

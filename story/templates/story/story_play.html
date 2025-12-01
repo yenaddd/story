@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>스토리 분기 체험 (V5 - 플레이)</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #5c6770; border-bottom: 2px solid #5c6770; padding-bottom: 10px; }
+        .metadata { font-size: 0.9em; color: #777; margin-bottom: 20px; border-bottom: 1px dashed #ddd; padding-bottom: 10px; }
+        .relationships { margin-top: 10px; padding: 10px; background-color: #e9ecef; border-radius: 4px; }
+        .story-text { font-size: 1.1em; line-height: 1.6; white-space: pre-wrap; margin-bottom: 30px; }
+        .choices-container { padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        .choice-btn {
+            display: block; width: 100%; padding: 10px; margin: 10px 0;
+            background-color: #007bff; color: white; border: none;
+            border-radius: 5px; cursor: pointer; font-size: 1em;
+            transition: background-color 0.2s;
+        }
+        .choice-btn:hover { background-color: #0056b3; }
+        .ending { color: #dc3545; font-weight: bold; font-size: 1.2em; text-align: center; margin-top: 30px; }
+        .error-link { margin-top: 20px; }
+        .loading-message { color: #007bff; font-weight: bold; } 
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📜 스토리 플레이</h1>
+        
+        <div style="text-align: right; margin-bottom: 15px;">
+            <a href="{% url 'story-plot' %}" target="_blank" style="background-color: #64748b; color: white; padding: 8px 15px; text-decoration: none; border-radius: 6px; font-size: 0.9em;">
+                📖 전체 줄거리(설정) 보기
+            </a>
+        </div>
+
+        <div id="metadata" class="metadata"></div>
+
+        <div id="story-content" class="story-text">스토리를 로드 중입니다...</div>
+        
+        <h2>다음 결정 (당신의 선택)</h2>
+        <div id="choices-container" class="choices-container"></div>
+    </div>
+
+    <script>
+        const API_BASE_URL = "/story/api/node/"; 
+        const CREATOR_PAGE_URL = "/story/creator/"; 
+        const urlParams = new URLSearchParams(window.location.search);
+        let currentNodeId = parseInt(urlParams.get('node_id')) || 1;
+        
+        const MAX_RETRIES = 10; 
+        const RETRY_DELAY_MS = 1000; 
+
+        async function loadNode(nodeId, attempt = 1) {
+            currentNodeId = nodeId;
+            const contentDiv = document.getElementById('story-content');
+            const choicesDiv = document.getElementById('choices-container');
+            const metaDiv = document.getElementById('metadata');
+            
+            metaDiv.innerHTML = '';
+            choicesDiv.innerHTML = '';
+            
+            contentDiv.innerHTML = `<span class="loading-message">스토리 로딩 중... (시도 ${attempt}/${MAX_RETRIES})</span>`;
+
+            try {
+                const url = `${API_BASE_URL}${nodeId}/`; 
+                const response = await fetch(url);
+
+                if (response.status === 404) {
+                    if (nodeId === 1 && attempt < MAX_RETRIES) {
+                        console.warn(`Node 1 로드 실패 (404): ${RETRY_DELAY_MS}ms 후 재시도...`);
+                        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+                        return await loadNode(nodeId, attempt + 1);
+                    }
+                    
+                    contentDiv.innerHTML = `
+                        <p>저장된 스토리가 없거나, 노드 ID ${nodeId}를 찾을 수 없습니다.</p>
+                        <div class="error-link">
+                            <a href="${CREATOR_PAGE_URL}" style="color: #007bff; font-weight: bold;">새 스토리 생성 페이지로 이동</a>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                if (!response.ok) {
+                    throw new Error(`노드 로딩 실패: HTTP ${response.status}`);
+                }
+                
+                const nodeData = await response.json();
+                displayNode(nodeData);
+
+            } catch (error) {
+                contentDiv.textContent = `오류 발생: ${error.message}`;
+            }
+        }
+        
+        function displayNode(nodeData) {
+            // 1. 메타데이터 (관계, 심리 포함) 표시 - [수정됨: 객체 타입 처리]
+            let relHtml = '<ul>';
+            const rels = nodeData.current_relationships || {};
+            
+            for (const [char, status] of Object.entries(rels)) {
+                let statusText = status;
+                // 만약 status가 문자열이 아니고 객체라면 JSON 문자열로 변환하거나 특정 필드 추출
+                if (typeof status === 'object' && status !== null) {
+                    statusText = JSON.stringify(status).replace(/"/g, '').replace(/[{}]/g, ''); 
+                }
+                relHtml += `<li><strong>${char}:</strong> ${statusText}</li>`;
+            }
+            relHtml += '</ul>';
+
+            document.getElementById('metadata').innerHTML = `
+                <p>노드 ID: ${nodeData.id} | 깊이: ${nodeData.depth} | 단계: ${nodeData.freytag_stage}</p>
+                <p>감독 AI 평가 점수: ${nodeData.critique_score}점 | <strong>당신의 심리 상태</strong>: ${nodeData.protagonist_state}</p>
+                <div class="relationships">
+                    <strong>서브 캐릭터 관계 현황:</strong>
+                    ${relHtml}
+                </div>
+            `;
+
+            // 2. 스토리 내용 표시
+            document.getElementById('story-content').textContent = nodeData.story_text;
+
+            // 3. 선택지 버튼 표시
+            const choicesContainer = document.getElementById('choices-container');
+            choicesContainer.innerHTML = ''; 
+            
+            if (nodeData.choices && nodeData.choices.length > 0) {
+                nodeData.choices.forEach(choice => {
+                    const button = document.createElement('button');
+                    button.className = 'choice-btn';
+                    button.innerHTML = `→ ${choice.choice_text}`;
+                    button.onclick = () => loadNode(choice.next_node_id); 
+                    choicesContainer.appendChild(button);
+                });
+            } else {
+                choicesContainer.innerHTML = '<div class="ending">🎉 <strong>이야기 끝! 하나의 최종 결말에 도달했습니다.</strong></div>';
+            }
+        }
+
+        window.onload = () => {
+            loadNode(currentNodeId); 
+        };
+    </script>
+</body>
+</html>

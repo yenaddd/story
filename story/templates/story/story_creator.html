@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>✨ 다중 엔딩 스토리 설정 및 생성</title>
+    <style>
+        body { font-family: 'Inter', Arial, sans-serif; background-color: #f0f4f8; color: #334155; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+        .container { 
+            width: 100%;
+            max-width: 650px; 
+            margin-top: 50px;
+            background: white; 
+            padding: 40px; 
+            border-radius: 16px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08); 
+            border: 1px solid #e2e8f0;
+        }
+        h1 { color: #5c6770; margin-bottom: 30px; font-size: 1.8em; text-align: center; }
+        .form-group { margin-bottom: 20px; text-align: left; }
+        label { display: block; font-weight: 600; margin-bottom: 8px; color: #1e293b; }
+        textarea, select, input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            box-sizing: border-box;
+            font-size: 1em;
+            resize: vertical;
+            min-height: 100px;
+            transition: border-color 0.2s;
+        }
+        select { height: 44px; min-height: 44px; }
+        textarea:focus, select:focus, input[type="text"]:focus { border-color: #3b82f6; outline: none; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+        .btn-primary {
+            width: 100%;
+            padding: 15px;
+            background-color: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: 700;
+            transition: background-color 0.3s, opacity 0.3s;
+        }
+        .btn-primary:hover:not(:disabled) { background-color: #4338ca; }
+        .btn-primary:disabled { background-color: #a5b4fc; cursor: not-allowed; opacity: 0.7; }
+
+        .loading, .warning { 
+            margin-top: 20px; 
+            padding: 15px;
+            border-radius: 8px;
+            font-weight: 600;
+            text-align: center;
+            display: none; 
+        }
+        .loading { background-color: #eff6ff; color: #2563eb; }
+        .warning { background-color: #fef2f2; color: #ef4444; border: 1px solid #fca5a5; }
+
+        .note { font-size: 0.85em; color: #64748b; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✨ 다중 엔딩 스토리 설정 및 생성</h1>
+        <p class="note" style="text-align: center; margin-bottom: 30px;">원하는 깊이와 분기 설정을 입력하여 새로운 스토리 트리의 루트 노드를 생성합니다.</p>
+
+        <!-- Django CSRF 토큰을 포함하는 폼 (보안을 위해 필수) -->
+        <form id="config-form" onsubmit="startNewStory(event)">
+            {% csrf_token %} <!-- 🚨 CSRF 토큰 필드 추가 -->
+
+            <div class="form-group">
+                <label for="world_setting">세계관 / 인물 설정 (필수)</label>
+                <textarea id="world_setting" name="world_setting" required rows="5" placeholder="예시: 
+조선시대 배경의 좀비물입니다. 주인공은 의녀이며, 
+좀비 바이러스의 치료제를 찾기 위해 한양으로 떠납니다.
+주요 인물로는 호위무사 '철수'와 의심스러운 상인 '영희'가 있습니다."></textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="arc_type">캐릭터 아크 이론</label>
+                <select id="arc_type" name="arc_type">
+                    <option value="Positive Arc">성장 아크 (Positive Arc: 약점 극복, 성숙)</option>
+                    <option value="Negative Arc">몰락 아크 (Negative Arc: 파멸, 타락)</option>
+                    <option value="Flat Arc">평면 아크 (Flat Arc: 주변 변화 유도)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="branches">각 깊이별 분기 개수 (2 또는 3만 가능, 콤마(,)로 구분된 JSON 배열)</label>
+                <input type="text" id="branches" name="branches" required value="[2,3,2,3,2,3,2,3,2,3,2,3]">
+                <p class="note">예: [2,3,2] (깊이 3, 12개 엔딩) 또는 [2,3,2,3,2,3,2,3,2,3,2,3] (깊이 12, 69,984개 엔딩)</p>
+            </div>
+            
+            <button type="submit" id="reset-button" class="btn-primary">
+                기존 스토리 삭제, 설정 저장 후 루트 노드 생성
+            </button>
+        </form>
+        
+        <div id="loading-message" class="loading">
+            스토리 초기화 및 루트 노드 생성 중입니다... 
+        </div>
+        <div id="error-message" class="warning" style="display: none;"></div>
+    </div>
+
+    <script>
+        const API_RESET_URL = "{% url 'story-reset' %}"; 
+        // 🚨 Django CSRF 토큰을 DOM에서 읽어오는 함수
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    // Does this cookie string begin with the name we want?
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        function startNewStory(event) {
+            event.preventDefault(); // 폼 기본 제출 방지
+
+            const form = document.getElementById('config-form');
+            const button = document.getElementById('reset-button');
+            const loading = document.getElementById('loading-message');
+            const errorDiv = document.getElementById('error-message');
+            
+            // 입력값 가져오기
+            const world_setting = document.getElementById('world_setting').value.trim();
+            const arc_type = document.getElementById('arc_type').value;
+            const branches = document.getElementById('branches').value.trim();
+            
+            const csrftoken = getCookie('csrftoken'); // 🚨 CSRF 토큰 가져오기
+            
+            const payload = {
+                world_setting: world_setting,
+                arc_type: arc_type,
+                branches: branches
+            };
+
+            button.disabled = true;
+            loading.style.display = 'block';
+            errorDiv.style.display = 'none';
+
+            fetch(API_RESET_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrftoken // 🚨 CSRF 토큰 헤더에 추가
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    // API 키 오류나 403 Forbidden 오류 발생 시, 서버 에러 메시지를 파싱
+                    return response.json().then(err => { 
+                        throw new Error(err.error || response.statusText); 
+                    }).catch(() => {
+                         // JSON 파싱 실패 시 (예: 403 Forbidden 순수 HTML 응답)
+                        throw new Error(`[HTTP Error ${response.status}] 서버 인증(CSRF) 또는 연결 오류. 백엔드 로그 확인이 필요합니다.`);
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.root_node_id) {
+                    // 성공적으로 루트 노드가 생성되면 스토리 체험 페이지로 리디렉션
+                    window.location.href = `/story/play/?node_id=${data.root_node_id}`;
+                } else {
+                    throw new Error('루트 노드 ID를 받지 못했습니다. 백엔드 로그를 확인하세요.');
+                }
+            })
+            .catch(error => {
+                loading.style.display = 'none';
+                button.disabled = false;
+                // 에러 메시지를 사용자에게 표시
+                errorDiv.textContent = `스토리 생성 실패: ${error.message}`;
+                errorDiv.style.display = 'block';
+            });
+        }
+    </script>
+</body>
+</html>
