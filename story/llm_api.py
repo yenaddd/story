@@ -30,15 +30,25 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
 
     for attempt in range(max_retries):
         try:
+            # [수정] max_tokens 5000 이상일 경우 stream=True 필수
+            stream_option = True
+            
             response = client.chat.completions.create(
                 model=MODEL_NAME, 
                 messages=messages, 
                 response_format=response_format, 
                 temperature=0.7, 
-                max_tokens=8000,
-                timeout=90
+                max_tokens=8000,  # 긴 생성을 위해 8000 유지
+                timeout=90,
+                stream=stream_option # 스트리밍 활성화
             )
-            content = response.choices[0].message.content
+            
+            # 스트리밍 응답을 하나로 합침
+            content = ""
+            for chunk in response:
+                if chunk.choices[0].delta.content is not None:
+                    content += chunk.choices[0].delta.content
+
             if json_format:
                 cleaned = content.replace("```json", "").replace("```", "").strip()
                 return json.loads(cleaned)
@@ -90,6 +100,8 @@ def create_story_pipeline(user_world_setting):
     )
     
     if not original_nodes or len(original_nodes) < 2:
+        # 에러 발생 시 로그 출력 강화
+        print("❌ [Error] 노드 생성 실패. LLM 응답이 비어있거나 형식이 잘못되었습니다.")
         raise ValueError("AI가 스토리 노드를 생성하지 못했습니다.")  
     
     # 5. 첫 노드 연결 (Neo4j)
@@ -101,7 +113,6 @@ def create_story_pipeline(user_world_setting):
             print(f"Neo4j Link Error: {e}")
 
     # 6. 선형 연결 (기존 경로 선택지 생성)
-    # 여기서 이미 [Node 1] -> [Node 2]로 가는 '기존 선택지 2개'가 생성됨
     _connect_linear_nodes(original_nodes, universe_id, protagonist_name)
 
     # 7. 비틀기(Twist) 설정
@@ -134,14 +145,9 @@ def create_story_pipeline(user_world_setting):
     )
 
     # 10. 분기 처리 (선택지 추가 로직 수정)
-    # 기존 선택지를 삭제하지 않고, 새 브랜치로 가는 선택지만 '추가'합니다.
     if new_branch_nodes:
         new_next = new_branch_nodes[0]
-        
-        # [수정됨] 기존 선택지 삭제 코드 제거함
-        # NodeChoice.objects.filter(current_node=twist_node).delete() -> 삭제 안 함
-        
-        # [수정됨] 새로운 경로(Twist)로 가는 선택지 2개만 추가 생성
+        # 기존 선택지 삭제 없이, 새로운 경로(Twist)로 가는 선택지 2개만 추가 생성
         _add_twist_branch_choices_only(twist_node, new_next, universe_id, protagonist_name)
 
     # 11. 새 브랜치 내부 연결
