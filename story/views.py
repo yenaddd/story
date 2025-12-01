@@ -39,10 +39,15 @@ class StoryStatusAPIView(APIView):
         exists = Story.objects.exists() and StoryNode.objects.exists()
         return Response({'exists': exists})
 
+# ... (상단 import 및 기존 views 코드는 유지)
+
 # 6. [API] 스토리 생성 (14단계 파이프라인 실행)
 class StoryResetAPIView(APIView):
     def post(self, request):
         world_setting = request.data.get('world_setting')
+        
+        # [수정] 프론트엔드에서 더 이상 arc_type, branches를 보내지 않으므로 받지 않음
+        
         if not world_setting:
             return Response({'error': '설정을 입력해주세요.'}, status=400)
             
@@ -52,7 +57,7 @@ class StoryResetAPIView(APIView):
             StoryNode.objects.all().delete()
             NodeChoice.objects.all().delete()
             
-            # 파이프라인 실행
+            # 파이프라인 실행 (세계관 설정만 전달)
             story_id = create_story_pipeline(world_setting)
             
             # 루트 노드 찾기

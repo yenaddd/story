@@ -1,6 +1,6 @@
 import os
 import json
-import random
+import time
 from openai import OpenAI
 from django.conf import settings
 from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
@@ -11,32 +11,58 @@ BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3"
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
-def call_llm(system_prompt, user_prompt, json_format=False):
-    """LLM 호출 래퍼"""
+def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
+    """LLM 호출 래퍼 (재시도 로직 포함)"""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    try:
-        response_format = {"type": "json_object"} if json_format else None
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            response_format=response_format,
-            temperature=0.7,
-            max_tokens=4000 
-        )
-        content = response.choices[0].message.content
-        if json_format:
-            # JSON 파싱 보정
-            if "```json" in content:
-                content = content.replace("```json", "").replace("```", "")
-            return json.loads(content)
-        return content
-    except Exception as e:
-        print(f"LLM Error: {e}")
-        return {} if json_format else ""
+    
+    response_format = {"type": "json_object"} if json_format else None
+    
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                response_format=response_format,
+                temperature=0.7,
+                max_tokens=4000 
+            )
+            content = response.choices[0].message.content
+            
+            if json_format:
+                # JSON 파싱 보정
+                cleaned_content = content
+                if "```json" in cleaned_content:
+                    cleaned_content = cleaned_content.replace("```json", "").replace("```", "")
+                elif "```" in cleaned_content:
+                    cleaned_content = cleaned_content.replace("```", "")
+                
+                return json.loads(cleaned_content)
+            
+            return content
 
+        except json.JSONDecodeError as e:
+            print(f"JSON Parsing Error (Attempt {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                print("Max retries reached. Returning empty dict.")
+                return {}
+            time.sleep(1) # 잠시 대기 후 재시도
+            
+        except Exception as e:
+            print(f"LLM Critical Error: {e}")
+            # 치명적 오류(네트워크 등)는 바로 종료하거나 필요시 재시도 로직 추가 가능
+            return {} if json_format else ""
+
+    return {} if json_format else ""
+
+# ==========================================
+# [메인 파이프라인] 14단계 프로세스
+# ==========================================
+# ... (이후 create_story_pipeline 및 내부 함수들은 기존과 동일하므로 생략) ...
+# 기존 로직 유지: create_story_pipeline, _match_cliche, _generate_synopsis 등
+# 위 call_llm 함수만 교체해주시면 됩니다.
 # ==========================================
 # [메인 파이프라인] 14단계 프로세스
 # ==========================================
