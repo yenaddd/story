@@ -160,34 +160,47 @@ def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_br
     context_note = "주의: Twist Branch입니다." if is_twist_branch else ""
     user_prompt = f"시놉시스: {synopsis}\n상태: {char_states_str}\n{context_note}\n형식: {{'scenes': [...]}}"
     
+    # LLM 호출
     res = call_llm(sys_prompt, user_prompt, json_format=True)
-
-    # [디버깅용 출력 추가]
     print(f"🔍 [Debug] LLM Response for Nodes: {res}") 
 
     scenes = res.get('scenes', [])
-    
     if not scenes:
         print("⚠️ [Warning] 'scenes' key not found in response or list is empty.")
 
     target_scenes = scenes[start_node_index:]
     
-    for i, content in enumerate(target_scenes):
+    for i, scene_data in enumerate(target_scenes):
         current_idx = start_node_index + i
         if current_idx >= 8: break 
         
         phase_name = phases[min(current_idx // 2, 3)]
         
-        # 1. Django DB 저장
-        node = StoryNode.objects.create(story=story, chapter_phase=phase_name, content=content)
+        # 1. 데이터 추출 (딕셔너리 분해)
+        title = scene_data.get('title', '무제')
+        setting = scene_data.get('setting', '')
+        characters = scene_data.get('characters_involved', []) # 리스트 그대로 사용
+        description = scene_data.get('description', '')
+        purpose = scene_data.get('purpose', '')
+
+        # 2. Django DB 저장용 (문자열)
+        # Django 'content' 필드는 텍스트만 받으므로 보기 좋게 합쳐서 저장
+        django_content = f"[{title}]\n\n{description}"
+        
+        node = StoryNode.objects.create(story=story, chapter_phase=phase_name, content=django_content)
         nodes.append(node)
         
-        # 2. Neo4j 전송 (노드 생성만 담당, UniverseID 제거)
+        # 3. Neo4j 전송 (분해된 데이터 전송)
+        # 딕셔너리 통째가 아니라, 각각의 요소를 StoryNodeData 필드에 넣어줍니다.
         try:
             neo4j_data = StoryNodeData(
                 node_id=node.id,
                 phase=phase_name,
-                content=content,
+                title=title,
+                setting=setting,
+                characters=characters,
+                description=description,
+                purpose=purpose,
                 character_state=char_states_str
             )
             sync_node_to_neo4j(neo4j_data)

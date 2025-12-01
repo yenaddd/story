@@ -1,8 +1,9 @@
+# story/neo4j_connection.py
 from neo4j import GraphDatabase
 import json
 from dataclasses import dataclass, asdict
 
-# Neo4j 연결 설정
+# Neo4j 연결 설정 (기존 설정 유지)
 URI = "neo4j+ssc://32adcd36.databases.neo4j.io"
 AUTH = ("neo4j", "sKyJKxvWChIunry20Sk2cA-Wi-d-0oZH75LWcZz6zUg")
 
@@ -29,13 +30,8 @@ def run_cypher(query: str, params: dict = None):
     except Exception as e:
         print(f"Cypher 쿼리 실행 중 오류 발생: {e}")
 
-# -----------------------------------------------------------
-# [1] 세계관(Universe) 노드 생성
-# -----------------------------------------------------------
+# [1] Universe 노드 생성 (기존 동일)
 def create_universe_node_neo4j(universe_id: str, world_setting: str):
-    """
-    최상위 부모 노드인 Universe 노드를 생성합니다.
-    """
     query = """
     MERGE (u:Universe {universe_id: $universe_id})
     ON CREATE SET 
@@ -48,13 +44,18 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str):
     print(f"  [Neo4j] Universe Node Created: {universe_id}")
 
 # -----------------------------------------------------------
-# [2] 스토리(Scene) 노드 생성
+# [2] 스토리(Scene) 노드 생성 (수정됨: 개별 필드로 분리)
 # -----------------------------------------------------------
 @dataclass
 class StoryNodeData:
     node_id: int          # Django ID
-    phase: str            # 단계 (발단, 전개...)
-    content: str          # 내용
+    phase: str            # 단계
+    # 기존 content 하나 대신 세부 필드로 분리
+    title: str
+    setting: str
+    characters: list      # Neo4j는 리스트 저장을 지원합니다
+    description: str
+    purpose: str
     character_state: str  # 내면 상태 JSON
 
     def to_dict(self):
@@ -62,29 +63,27 @@ class StoryNodeData:
 
 def sync_node_to_neo4j(data: StoryNodeData):
     props = data.to_dict()
+    # 딕셔너리를 통째로 넣는 게 아니라, n.title, n.description 처럼 풀어서 넣습니다.
     query = """
     MERGE (n:Scene {node_id: $props.node_id})
     ON CREATE SET 
-        n.content = $props.content,
+        n.title = $props.title,
+        n.setting = $props.setting,
+        n.characters = $props.characters,
+        n.description = $props.description,
+        n.purpose = $props.purpose,
         n.phase = $props.phase,
         n.character_state = $props.character_state,
         n.created_at = timestamp()
     ON MATCH SET 
-        n.content = $props.content,
-        n.phase = $props.phase,
+        n.title = $props.title,
+        n.description = $props.description,
         n.character_state = $props.character_state
     """
     run_cypher(query, {"props": props})
 
-# -----------------------------------------------------------
-# [3] 연결 관계 생성 (Universe -> Start, Scene -> Scene)
-# -----------------------------------------------------------
-
+# [3] 연결 관계 생성 (기존 동일)
 def link_universe_to_first_scene(universe_id: str, first_node_id: int):
-    """
-    세계관(Universe)과 이야기의 시작점(첫 Scene)을 연결합니다.
-    (Universe)-[:HAS_START]->(Scene)
-    """
     query = """
     MATCH (u:Universe {universe_id: $universe_id})
     MATCH (n:Scene {node_id: $node_id})
@@ -94,10 +93,6 @@ def link_universe_to_first_scene(universe_id: str, first_node_id: int):
     print(f"  [Neo4j] Linked Universe -> First Scene ({first_node_id})")
 
 def sync_choice_to_neo4j(curr_id, next_id, choice_text, result_text, is_twist=False):
-    """
-    선택지에 따른 Scene 간 연결 관계를 생성합니다.
-    (Scene)-[:CHOICE]->(Scene)
-    """
     rel_type = "TWIST_CHOICE" if is_twist else "CHOICE"
     query = f"""
     MATCH (curr:Scene {{node_id: $curr_id}})
