@@ -2,7 +2,7 @@ from neo4j import GraphDatabase
 import json
 from dataclasses import dataclass, asdict
 
-# Neo4j 연결 설정 (기존 유지)
+# Neo4j 연결 설정
 URI = "neo4j+ssc://32adcd36.databases.neo4j.io"
 AUTH = ("neo4j", "sKyJKxvWChIunry20Sk2cA-Wi-d-0oZH75LWcZz6zUg")
 
@@ -30,25 +30,38 @@ def run_cypher(query: str, params: dict = None):
         print(f"Cypher 쿼리 실행 중 오류 발생: {e}")
 
 # -----------------------------------------------------------
-# [1] 노드 데이터 전송 (내용, 단계, ID, 인물 내면)
+# [1] 세계관(Universe) 노드 생성
+# -----------------------------------------------------------
+def create_universe_node_neo4j(universe_id: str, world_setting: str):
+    """
+    최상위 부모 노드인 Universe 노드를 생성합니다.
+    """
+    query = """
+    MERGE (u:Universe {universe_id: $universe_id})
+    ON CREATE SET 
+        u.setting = $world_setting,
+        u.created_at = timestamp()
+    ON MATCH SET 
+        u.setting = $world_setting
+    """
+    run_cypher(query, {"universe_id": universe_id, "world_setting": world_setting})
+    print(f"  [Neo4j] Universe Node Created: {universe_id}")
+
+# -----------------------------------------------------------
+# [2] 스토리(Scene) 노드 생성
 # -----------------------------------------------------------
 @dataclass
 class StoryNodeData:
-    node_id: int          # Django ID와 일치시켜 식별
-    phase: str            # 발단, 전개, 절정, 결말
-    content: str          # 노드 줄거리 내용
-    character_state: str  # 인물 내면 상태 (JSON String)
+    node_id: int          # Django ID
+    phase: str            # 단계 (발단, 전개...)
+    content: str          # 내용
+    character_state: str  # 내면 상태 JSON
 
     def to_dict(self):
         return asdict(self)
 
 def sync_node_to_neo4j(data: StoryNodeData):
-    """
-    Django의 StoryNode가 생성될 때 호출.
-    Neo4j에 Scene 노드를 생성하거나 업데이트합니다.
-    """
     props = data.to_dict()
-    
     query = """
     MERGE (n:Scene {node_id: $props.node_id})
     ON CREATE SET 
@@ -62,30 +75,39 @@ def sync_node_to_neo4j(data: StoryNodeData):
         n.character_state = $props.character_state
     """
     run_cypher(query, {"props": props})
-    # print(f"  [Neo4j] Node {props['node_id']} synced.")
 
 # -----------------------------------------------------------
-# [2] 선택지 및 연결 데이터 전송 (선택지 내용, 결과 행동, 연결)
+# [3] 연결 관계 생성 (Universe -> Start, Scene -> Scene)
 # -----------------------------------------------------------
-def sync_choice_to_neo4j(current_node_id, next_node_id, choice_text, result_text, is_twist=False):
-    """
-    Django의 NodeChoice가 생성될 때 호출.
-    두 노드 사이를 잇는 CHOICE 관계(Relationship)를 생성합니다.
-    """
-    params = {
-        "curr_id": current_node_id,
-        "next_id": next_node_id,
-        "choice_text": choice_text,
-        "result_text": result_text,
-        "type": "TWIST_CHOICE" if is_twist else "CHOICE"
-    }
 
-    # 관계(Relationship)에 속성(선택지 텍스트, 결과 행동)을 저장합니다.
+def link_universe_to_first_scene(universe_id: str, first_node_id: int):
+    """
+    세계관(Universe)과 이야기의 시작점(첫 Scene)을 연결합니다.
+    (Universe)-[:HAS_START]->(Scene)
+    """
+    query = """
+    MATCH (u:Universe {universe_id: $universe_id})
+    MATCH (n:Scene {node_id: $node_id})
+    MERGE (u)-[r:HAS_START]->(n)
+    """
+    run_cypher(query, {"universe_id": universe_id, "node_id": first_node_id})
+    print(f"  [Neo4j] Linked Universe -> First Scene ({first_node_id})")
+
+def sync_choice_to_neo4j(curr_id, next_id, choice_text, result_text, is_twist=False):
+    """
+    선택지에 따른 Scene 간 연결 관계를 생성합니다.
+    (Scene)-[:CHOICE]->(Scene)
+    """
+    rel_type = "TWIST_CHOICE" if is_twist else "CHOICE"
     query = f"""
     MATCH (curr:Scene {{node_id: $curr_id}})
     MATCH (next:Scene {{node_id: $next_id}})
-    MERGE (curr)-[r:{params['type']} {{choice_text: $choice_text}}]->(next)
+    MERGE (curr)-[r:{rel_type} {{choice_text: $choice_text}}]->(next)
     SET r.result_text = $result_text
     """
-    run_cypher(query, params)
-    # print(f"  [Neo4j] Link: {current_node_id} -> {next_node_id} ({choice_text})")
+    run_cypher(query, {
+        "curr_id": curr_id, 
+        "next_id": next_id, 
+        "choice_text": choice_text, 
+        "result_text": result_text
+    })
