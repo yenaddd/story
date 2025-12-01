@@ -6,7 +6,6 @@ from openai import OpenAI
 from django.conf import settings
 from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 
-# [추가] 수정된 Neo4j 함수 임포트
 from .neo4j_connection import (
     create_universe_node_neo4j, 
     sync_node_to_neo4j, 
@@ -15,7 +14,7 @@ from .neo4j_connection import (
     StoryNodeData
 )
 
-# API 설정 (기존 유지)
+# API 설정
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
@@ -24,8 +23,9 @@ client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
+    
     if not DEEPSEEK_API_KEY:
-        print("🚨 [Critical] API Key is MISSING! (.env 파일을 확인해주세요)")
+        print("🚨 [Critical] API Key is MISSING!")
         return {} if json_format else ""
 
     for attempt in range(max_retries):
@@ -35,17 +35,14 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
                 messages=messages, 
                 response_format=response_format, 
                 temperature=0.7, 
-                max_tokens=4000, # DeepSeek V3는 컨텍스트가 길므로 여유 있게 설정
-                timeout=60       # 응답 대기 시간
+                max_tokens=4000,
+                timeout=60
             )
             content = response.choices[0].message.content
-            
-            # JSON 포맷팅 응답 처리
             if json_format:
                 cleaned = content.replace("```json", "").replace("```", "").strip()
                 return json.loads(cleaned)
             return content
-
         except Exception as e:
             print(f"⚠️ [LLM Error] Attempt {attempt+1}/{max_retries} Failed: {str(e)}")
             time.sleep(1)
@@ -58,7 +55,7 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
 # ==========================================
 
 def create_story_pipeline(user_world_setting):
-    # [Neo4j] 1. Universe ID 생성 및 세계관 노드 생성
+    # [Neo4j] 1. Universe ID 생성
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
     try:
@@ -66,7 +63,7 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # (Django 로직: 클리셰 매칭 ~ 시놉시스 생성 - 기존 동일)
+    # (Django 로직)
     matched_cliche = _match_cliche(user_world_setting)
     story = Story.objects.create(user_world_setting=user_world_setting, main_cliche=matched_cliche)
     synopsis = _generate_synopsis(story, matched_cliche)
@@ -74,30 +71,28 @@ def create_story_pipeline(user_world_setting):
     story.save()
     _analyze_and_save_character_state(story, synopsis, context="Initial Synopsis")
 
-    # [Neo4j & Django] 2. 첫 번째 챕터 노드들 생성
-    original_nodes = _create_nodes_from_synopsis(story, synopsis, start_node_index=0)
-    if not original_nodes or len(original_nodes) < 2:
-        print(f"❌ [Error] 노드 생성 실패. 생성된 노드 수: {len(original_nodes)}")
-        # 실패 시 예외를 발생시켜 로그에 명확히 남기고 중단
-        raise ValueError("AI가 스토리 노드를 생성하지 못했습니다. (API 응답 오류 또는 파싱 실패)")  
+    # [Neo4j & Django] 2. 첫 번째 챕터 노드들 생성 (Universe ID 전달)
+    original_nodes = _create_nodes_from_synopsis(story, synopsis, start_node_index=0, universe_id=universe_id)
     
-    # [Neo4j] 3. 첫 번째 노드(Root Node)를 Universe와 연결
+    if not original_nodes or len(original_nodes) < 2:
+        print(f"❌ [Error] 노드 생성 실패.")
+        raise ValueError("AI가 스토리 노드를 생성하지 못했습니다.")  
+    
+    # [Neo4j] 3. 첫 번째 노드와 Universe 연결 (ID 조합)
     if original_nodes:
         try:
-            link_universe_to_first_scene(universe_id, original_nodes[0].id)
+            first_node_uid = f"{universe_id}_{original_nodes[0].id}"
+            link_universe_to_first_scene(universe_id, first_node_uid)
         except Exception as e:
             print(f"Neo4j Link Error: {e}")
 
-    # [Neo4j & Django] 4. 선형 연결
-    _connect_linear_nodes(original_nodes)
+    # [Neo4j & Django] 4. 선형 연결 (Universe ID 전달)
+    _connect_linear_nodes(original_nodes, universe_id)
 
-    # (비틀기 로직 - 기존 동일)
+    # (비틀기 로직)
     twist_node_index = _find_twist_point_index(original_nodes)
-
-    if twist_node_index >= len(original_nodes):
-        twist_node_index = len(original_nodes) - 1
+    if twist_node_index >= len(original_nodes): twist_node_index = len(original_nodes) - 1
         
-    twist_node = original_nodes[twist_node_index]
     twist_node = original_nodes[twist_node_index]
     story.twist_point_node_id = twist_node.id
     story.save()
@@ -109,18 +104,18 @@ def create_story_pipeline(user_world_setting):
     story.save()
     _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
 
-    # [Neo4j & Django] 5. 비틀기 이후 노드 생성
-    new_branch_nodes = _create_nodes_from_synopsis(story, twisted_synopsis, start_node_index=twist_node_index+1, is_twist_branch=True)
+    # [Neo4j & Django] 5. 비틀기 이후 노드 생성 (Universe ID 전달)
+    new_branch_nodes = _create_nodes_from_synopsis(story, twisted_synopsis, start_node_index=twist_node_index+1, is_twist_branch=True, universe_id=universe_id)
 
-    # [Neo4j & Django] 6. 분기 처리 (선택지 관계 전송 포함)
+    # [Neo4j & Django] 6. 분기 처리 (Universe ID 전달)
     if twist_node_index + 1 < len(original_nodes) and new_branch_nodes:
         original_next = original_nodes[twist_node_index + 1]
         new_next = new_branch_nodes[0]
         NodeChoice.objects.filter(current_node=twist_node).delete()
-        _create_twist_branch_choices(twist_node, original_next, new_next)
+        _create_twist_branch_choices(twist_node, original_next, new_next, universe_id)
 
-    # [Neo4j & Django] 7. 새 브랜치 연결
-    _connect_linear_nodes(new_branch_nodes)
+    # [Neo4j & Django] 7. 새 브랜치 연결 (Universe ID 전달)
+    _connect_linear_nodes(new_branch_nodes, universe_id)
 
     return story.id
 
@@ -128,7 +123,6 @@ def create_story_pipeline(user_world_setting):
 # [내부 로직 함수들]
 # ==========================================
 
-# ... (_match_cliche, _generate_synopsis, _analyze_and_save_character_state, _get_latest_character_states 기존 유지) ...
 def _match_cliche(setting):
     all_cliches = Cliche.objects.select_related('genre').all()
     if not all_cliches.exists(): return None
@@ -151,7 +145,7 @@ def _get_latest_character_states(story):
     for s in states: latest_map[s.character_name] = s.state_data
     return json.dumps(latest_map, ensure_ascii=False)
 
-def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_branch=False):
+def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_branch=False, universe_id=None):
     phases = ["발단", "전개", "절정", "결말"]
     nodes = []
     char_states_str = _get_latest_character_states(story)
@@ -160,13 +154,12 @@ def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_br
     context_note = "주의: Twist Branch입니다." if is_twist_branch else ""
     user_prompt = f"시놉시스: {synopsis}\n상태: {char_states_str}\n{context_note}\n형식: {{'scenes': [...]}}"
     
-    # LLM 호출
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     print(f"🔍 [Debug] LLM Response for Nodes: {res}") 
 
     scenes = res.get('scenes', [])
     if not scenes:
-        print("⚠️ [Warning] 'scenes' key not found in response or list is empty.")
+        print("⚠️ [Warning] 'scenes' key not found in response.")
 
     target_scenes = scenes[start_node_index:]
     
@@ -176,40 +169,40 @@ def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_br
         
         phase_name = phases[min(current_idx // 2, 3)]
         
-        # 1. 데이터 추출 (딕셔너리 분해)
         title = scene_data.get('title', '무제')
         setting = scene_data.get('setting', '')
-        characters = scene_data.get('characters_involved', []) # 리스트 그대로 사용
+        characters = scene_data.get('characters_involved', [])
         description = scene_data.get('description', '')
         purpose = scene_data.get('purpose', '')
 
-        # 2. Django DB 저장용 (문자열)
-        # Django 'content' 필드는 텍스트만 받으므로 보기 좋게 합쳐서 저장
+        # Django DB 저장 (문자열)
         django_content = f"[{title}]\n\n{description}"
-        
         node = StoryNode.objects.create(story=story, chapter_phase=phase_name, content=django_content)
         nodes.append(node)
         
-        # 3. Neo4j 전송 (분해된 데이터 전송)
-        # 딕셔너리 통째가 아니라, 각각의 요소를 StoryNodeData 필드에 넣어줍니다.
-        try:
-            neo4j_data = StoryNodeData(
-                node_id=node.id,
-                phase=phase_name,
-                title=title,
-                setting=setting,
-                characters=characters,
-                description=description,
-                purpose=purpose,
-                character_state=char_states_str
-            )
-            sync_node_to_neo4j(neo4j_data)
-        except Exception as e:
-            print(f"Neo4j Node Sync Error: {e}")
+        # Neo4j 전송 (ID 조합 적용)
+        if universe_id:
+            try:
+                # [수정] ID 조합 생성: UUID_1, UUID_2 ...
+                neo4j_node_uid = f"{universe_id}_{node.id}"
+                
+                neo4j_data = StoryNodeData(
+                    node_id=neo4j_node_uid,
+                    phase=phase_name,
+                    title=title,
+                    setting=setting,
+                    characters=characters,
+                    description=description,
+                    purpose=purpose,
+                    character_state=char_states_str
+                )
+                sync_node_to_neo4j(neo4j_data)
+            except Exception as e:
+                print(f"Neo4j Node Sync Error: {e}")
 
     return nodes
 
-def _connect_linear_nodes(nodes):
+def _connect_linear_nodes(nodes, universe_id):
     for i in range(len(nodes) - 1):
         curr = nodes[i]
         next_n = nodes[i+1]
@@ -225,9 +218,13 @@ def _connect_linear_nodes(nodes):
                 current_node=curr, choice_text=item['text'], result_text=item['result'], 
                 next_node=next_n, is_twist_path=False
             )
-            try:
-                sync_choice_to_neo4j(curr.id, next_n.id, item['text'], item['result'], is_twist=False)
-            except: pass
+            if universe_id:
+                try:
+                    # [수정] ID 조합 적용
+                    curr_uid = f"{universe_id}_{curr.id}"
+                    next_uid = f"{universe_id}_{next_n.id}"
+                    sync_choice_to_neo4j(curr_uid, next_uid, item['text'], item['result'], is_twist=False)
+                except: pass
 
 def _find_twist_point_index(nodes):
     if len(nodes) < 4: return 1
@@ -241,7 +238,6 @@ def _find_twist_point_index(nodes):
     return idx
 
 def _generate_twisted_synopsis_data(story, accumulated, phase):
-    # (복선 회수 프롬프트 유지)
     all_cliches = Cliche.objects.exclude(id=story.main_cliche.id).all()
     if not all_cliches: return None, ""
     cliche_info = "\n".join([f"ID {c.id}: {c.title}" for c in all_cliches])
@@ -253,23 +249,30 @@ def _generate_twisted_synopsis_data(story, accumulated, phase):
     twisted_synopsis = call_llm("치밀한 복선 회수. 시놉시스 재구성.", f"스토리: {accumulated}\n새 클리셰: {new_cliche.title}")
     return new_cliche, twisted_synopsis
 
-def _create_twist_branch_choices(node, old_next, new_next):
+def _create_twist_branch_choices(node, old_next, new_next, universe_id):
     sys_prompt = "장르 전환 분기점. 선택지 1,2(Original), 3,4(Twist) 생성. result_text 완결 문장."
     user_prompt = f"현재: {node.content[-500:]}\n기존 다음: {old_next.content[:500]}\n새 다음: {new_next.content[:500]}\n형식: JSON"
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     
+    # [수정] ID 조합 적용
+    curr_uid = f"{universe_id}_{node.id}"
+    old_next_uid = f"{universe_id}_{old_next.id}"
+    new_next_uid = f"{universe_id}_{new_next.id}"
+
     for item in res.get('original_choices', []):
         NodeChoice.objects.create(
             current_node=node, choice_text=item['text'], result_text=item['result'], 
             next_node=old_next, is_twist_path=False
         )
-        try: sync_choice_to_neo4j(node.id, old_next.id, item['text'], item['result'], is_twist=False)
-        except: pass
+        if universe_id:
+            try: sync_choice_to_neo4j(curr_uid, old_next_uid, item['text'], item['result'], is_twist=False)
+            except: pass
         
     for item in res.get('twist_choices', []):
         NodeChoice.objects.create(
             current_node=node, choice_text=item['text'], result_text=item['result'], 
             next_node=new_next, is_twist_path=True
         )
-        try: sync_choice_to_neo4j(node.id, new_next.id, item['text'], item['result'], is_twist=True)
-        except: pass
+        if universe_id:
+            try: sync_choice_to_neo4j(curr_uid, new_next_uid, item['text'], item['result'], is_twist=True)
+            except: pass
