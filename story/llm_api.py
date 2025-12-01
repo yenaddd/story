@@ -8,7 +8,7 @@ from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 # API 설정
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 BASE_URL = "https://api.fireworks.ai/inference/v1"
-MODEL_NAME = "accounts/fireworks/models/deepseek-v3"
+MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1"
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
@@ -327,7 +327,9 @@ def _generate_twisted_synopsis_data(story, accumulated_story, current_phase):
 
     cliche_info = "\n".join([f"ID {c.id}: [{c.genre.name}] {c.title}" for c in all_cliches])
     
-    rec_sys = "현재까지의 스토리와 정반대되거나 충격적인 전개를 줄 수 있는 새로운 클리셰 ID를 하나 추천하세요."
+    rec_sys = "당신은 반전의 대가입니다. 현재까지 진행된 스토리 속에 숨겨진 '애매한 요소'나 '미해결 떡밥'을 찾으세요. "
+    "이를 전혀 다른 장르의 관점에서 논리적으로 재해석할 수 있는 새로운 클리셰 ID를 추천하세요. "
+    "(예: '유령(호러)'인 줄 알았으나 사실 '홀로그램(SF)'이었다 / '로맨스'인 줄 알았으나 '범죄 스릴러'의 타깃이었다)"
     rec_user = f"현재 스토리:\n{accumulated_story[-1000:]}\n\n후보 목록:\n{cliche_info}\n\n출력: {{'cliche_id': 숫자}}"
     
     rec_res = call_llm(rec_sys, rec_user, json_format=True)
@@ -338,10 +340,9 @@ def _generate_twisted_synopsis_data(story, accumulated_story, current_phase):
 
     # 9-2. 새로운 시놉시스 생성 (전체 분량)
     sys_prompt = (
-        "당신은 반전 스토리 작가입니다. "
-        "주어진 '현재까지의 이야기'는 그대로 유지하되, 그 이후부터는 '새로운 클리셰'를 적용하여 "
-        "장르가 급변하는 새로운 전체 시놉시스를 작성하세요. "
-        "중요: 시놉시스는 이야기의 처음(발단)부터 새로운 결말까지 전체 내용을 포함해야 합니다."
+        "당신은 치밀한 복선 회수의 대가입니다. "
+        "주어진 '현재까지의 이야기'를 유지하되, 그동안 독자가 당연하게 여겼던 사실들을 '새로운 클리셰'의 관점에서 뒤집으세요. "
+        "단순한 장르 전환이 아니라, '아, 그래서 아까 그런 일이 있었구나!'라고 무릎을 탁 치게 만드는 필연적인 인과관계를 포함하여 전체 시놉시스를 재구성하세요."
     )
     user_prompt = (
         f"현재까지 이야기: {accumulated_story}\n"
@@ -359,10 +360,10 @@ def _create_twist_branch_choices(node, old_next, new_next):
     """12. 비틀기 지점의 4개 선택지 생성"""
     
     sys_prompt = (
-        "스토리의 중대한 분기점입니다. 4개의 선택지를 생성하세요.\n"
-        "선택지 1, 2는 기존의 스토리 흐름(Original Path)으로 이어지는 선택입니다.\n"
-        "선택지 3, 4는 새로운 장르의 흐름(Twist Path)으로 이어지는 선택입니다.\n"
-        "각 선택지의 '직후 행동 묘사(result_text)'는 다음 장면과 자연스럽게 연결되어야 합니다."
+        "스토리의 장르가 전환되는 결정적 분기점입니다. 4개의 선택지를 생성하세요.\n"
+        "선택지 1, 2 (Original): 기존 장르의 문법을 따르는 안전한 선택입니다.\n"
+        "선택지 3, 4 (Twist): 주인공의 성격에 부합하는 자연스러운 행동이지만, 그 결과로 숨겨진 진실(새로운 장르)을 마주하게 되는 선택입니다.\n"
+        "주의: 선택지 텍스트 자체는 너무 뜬금없지 않아야 합니다. 선택에 따른 '직후 행동 묘사(result_text)'에서 충격적인 진실이 드러나게 하세요."
     )
     user_prompt = (
         f"현재 장면: {node.content[-500:]}\n"
