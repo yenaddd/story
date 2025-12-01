@@ -62,7 +62,11 @@ def create_story_pipeline(user_world_setting):
 
     # [Neo4j & Django] 2. 첫 번째 챕터 노드들 생성
     original_nodes = _create_nodes_from_synopsis(story, synopsis, start_node_index=0)
-
+    if not original_nodes or len(original_nodes) < 2:
+        print(f"❌ [Error] 노드 생성 실패. 생성된 노드 수: {len(original_nodes)}")
+        # 실패 시 예외를 발생시켜 로그에 명확히 남기고 중단
+        raise ValueError("AI가 스토리 노드를 생성하지 못했습니다. (API 응답 오류 또는 파싱 실패)")  
+    
     # [Neo4j] 3. 첫 번째 노드(Root Node)를 Universe와 연결
     if original_nodes:
         try:
@@ -75,6 +79,11 @@ def create_story_pipeline(user_world_setting):
 
     # (비틀기 로직 - 기존 동일)
     twist_node_index = _find_twist_point_index(original_nodes)
+
+    if twist_node_index >= len(original_nodes):
+        twist_node_index = len(original_nodes) - 1
+        
+    twist_node = original_nodes[twist_node_index]
     twist_node = original_nodes[twist_node_index]
     story.twist_point_node_id = twist_node.id
     story.save()
@@ -138,7 +147,15 @@ def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_br
     user_prompt = f"시놉시스: {synopsis}\n상태: {char_states_str}\n{context_note}\n형식: {{'scenes': [...]}}"
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
+
+    # [디버깅용 출력 추가]
+    print(f"🔍 [Debug] LLM Response for Nodes: {res}") 
+
     scenes = res.get('scenes', [])
+    
+    if not scenes:
+        print("⚠️ [Warning] 'scenes' key not found in response or list is empty.")
+
     target_scenes = scenes[start_node_index:]
     
     for i, content in enumerate(target_scenes):
