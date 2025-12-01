@@ -18,7 +18,7 @@ from .neo4j_connection import (
 # API 설정 (기존 유지)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 BASE_URL = "https://api.fireworks.ai/inference/v1"
-MODEL_NAME = "accounts/fireworks/models/llama-v3-70b-instruct" 
+MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
@@ -30,28 +30,26 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            # 타임아웃 설정 추가 권장 (예: timeout=30)
             response = client.chat.completions.create(
                 model=MODEL_NAME, 
                 messages=messages, 
                 response_format=response_format, 
                 temperature=0.7, 
-                max_tokens=4000,
-                timeout=45  # [추가] 네트워크 지연 대비 타임아웃 설정
+                max_tokens=4000, # DeepSeek V3는 컨텍스트가 길므로 여유 있게 설정
+                timeout=60       # 응답 대기 시간
             )
             content = response.choices[0].message.content
+            
+            # JSON 포맷팅 응답 처리
             if json_format:
-                # 마크다운 제거 등 전처리
                 cleaned = content.replace("```json", "").replace("```", "").strip()
                 return json.loads(cleaned)
             return content
 
         except Exception as e:
-            # [핵심 수정] 에러를 숨기지 말고 출력해야 합니다.
             print(f"⚠️ [LLM Error] Attempt {attempt+1}/{max_retries} Failed: {str(e)}")
             time.sleep(1)
             
-    # 모든 재시도 실패 시
     print(f"❌ [Final Fail] LLM Call Failed completely.")
     return {} if json_format else ""
 
