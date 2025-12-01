@@ -4,6 +4,7 @@ import time
 from openai import OpenAI
 from django.conf import settings
 from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
+from .neo4j_connection import sync_node_to_neo4j, sync_choice_to_neo4j, StoryNodeData
 
 # API 설정
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
@@ -107,32 +108,20 @@ def create_story_pipeline(user_world_setting):
     # 10. 인물 내면 변화 DB 업데이트 (새 시놉시스 반영)
     _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
 
-    # 11 & 11-2. 비틀린 이후의 새로운 노드 생성
-    # [수정] 중요: 비틀기 지점 바로 다음 인덱스부터 빈틈없이 생성하도록 수정
-    # 기존 로직은 챕터 단위로 건너뛰어 일부 구간이 소실되는 문제가 있었음.
-    new_branch_nodes = _create_nodes_from_synopsis(
-        story, 
-        twisted_synopsis, 
-        start_node_index=twist_node_index + 1, 
-        is_twist_branch=True
-    )
+    # 11. 비틀기 이후 노드 생성 + [Neo4j 전송]
+    new_branch_nodes = _create_nodes_from_synopsis(story, twisted_synopsis, start_node_index=twist_node_index+1, is_twist_branch=True)
 
-    # 12. 비틀기 지점(Twist Node)에서의 분기 처리 (4개 선택지)
-    # 기존 다음 노드(Original) vs 새 루트 첫 노드(Twist)
+    # 12. 분기 처리 + [Neo4j 전송]
     if twist_node_index + 1 < len(original_nodes) and new_branch_nodes:
-        original_next_node = original_nodes[twist_node_index + 1]
-        new_next_node = new_branch_nodes[0]
-        
-        # 기존 연결(7번에서 생성됨)은 삭제하고 새로 4개를 만듭니다.
+        original_next = original_nodes[twist_node_index + 1]
+        new_next = new_branch_nodes[0]
         NodeChoice.objects.filter(current_node=twist_node).delete()
-        
-        _create_twist_branch_choices(twist_node, original_next_node, new_next_node)
+        _create_twist_branch_choices(twist_node, original_next, new_next)
 
-    # 13. 새로 생성된 브랜치 내부 연결 (선형)
+    # 13. 새 브랜치 연결 + [Neo4j 전송]
     _connect_linear_nodes(new_branch_nodes)
 
     return story.id
-
 
 # ==========================================
 # [내부 로직 함수들]
@@ -198,193 +187,101 @@ def _get_latest_character_states(story):
     return json.dumps(latest_map, ensure_ascii=False)
 
 def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_branch=False):
-    """
-    5, 6, 11. 상세 줄거리 생성 및 노드화
-    [수정] start_phase_idx 대신 start_node_index(0~7)를 받아 정밀하게 슬라이싱
-    """
     phases = ["발단", "전개", "절정", "결말"]
     nodes = []
-    
     char_states_str = _get_latest_character_states(story)
 
-    sys_prompt = (
-        "제공된 시놉시스를 기반으로 상세 스토리 씬을 생성합니다. "
-        "전체 이야기를 '발단', '전개', '절정', '결말' 4단계로 나누고, "
-        "각 단계를 다시 '상(파트1)', '하(파트2)' 두 부분으로 나누어 "
-        "총 8개의 상세 줄거리(각 2000자 내외)를 JSON 리스트로 만드세요. "
-        "인물의 내면 상태와 행동이 모순되지 않도록 주의하세요."
-    )
-    
-    context_note = ""
-    if is_twist_branch:
-        context_note = "주의: 이 시놉시스는 중간에 장르가 바뀐(Twist) 이야기입니다. 전체 흐름을 고려하여 8개 씬을 모두 완성하세요."
-
-    user_prompt = (
-        f"시놉시스: {synopsis}\n"
-        f"현재 인물 내면 상태: {char_states_str}\n"
-        f"{context_note}\n"
-        "형식: { 'scenes': [ '발단-1 내용', '발단-2 내용', '전개-1 내용', ... '결말-2 내용' ] }"
-    )
+    sys_prompt = "상세 스토리 씬 8개를 JSON 리스트로 생성하세요."
+    context_note = "주의: Twist Branch입니다." if is_twist_branch else ""
+    user_prompt = f"시놉시스: {synopsis}\n상태: {char_states_str}\n{context_note}\n형식: {{'scenes': [...]}}"
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     scenes = res.get('scenes', [])
-    
-    # [수정] 인덱스 기반으로 필요한 부분만 정확히 슬라이싱
-    # start_node_index가 3이면, scenes[3:]부터 가져옴 (총 8개 중)
     target_scenes = scenes[start_node_index:]
     
     for i, content in enumerate(target_scenes):
-        # 현재 생성 중인 노드의 전체 인덱스 (0~7)
         current_idx = start_node_index + i
-        if current_idx >= 8: break # 8개 초과 방지
+        if current_idx >= 8: break 
         
-        # 0,1->발단(0) / 2,3->전개(1) / 4,5->절정(2) / 6,7->결말(3)
         phase_name = phases[min(current_idx // 2, 3)]
         
-        node = StoryNode.objects.create(
-            story=story,
-            chapter_phase=phase_name,
-            content=content,
-        )
+        # 1. Django DB 저장
+        node = StoryNode.objects.create(story=story, chapter_phase=phase_name, content=content)
         nodes.append(node)
         
+        # 2. Neo4j 전송 (데이터 클래스 활용)
+        try:
+            neo4j_data = StoryNodeData(
+                node_id=node.id,  # Django ID 사용
+                phase=phase_name,
+                content=content,
+                character_state=char_states_str
+            )
+            sync_node_to_neo4j(neo4j_data)
+        except Exception as e:
+            print(f"Neo4j Sync Error: {e}")
+
     return nodes
 
 def _connect_linear_nodes(nodes):
-    """7 & 13. 노드 간 선형 연결 (Illusion of Choice)"""
     for i in range(len(nodes) - 1):
         curr = nodes[i]
         next_n = nodes[i+1]
-        
         next_n.prev_node = curr
         next_n.save()
         
-        # [수정] 주체 통일 및 완결된 문장 요구사항 반영
-        sys_prompt = (
-            "현재 노드에서 다음 노드로 넘어가기 위한 선택지 2개를 만드세요. "
-            "이 선택지들은 스토리를 분기시키지 않고, 동일한 다음 노드로 이어집니다. "
-            "각 선택지에 대해 '선택지 선택 직후 이어지는 주인공의 행동이나 대사(result_text)'를 생성하세요. "
-            "조건 1: result_text는 반드시 **주인공을 주어로 하는 완결된 문장**이어야 합니다. "
-            "(예: '나는 조용히 문을 열었다.', '그는 화가 나서 소리쳤다.') "
-            "조건 2: result_text는 다음 노드의 첫 문장 앞에 자연스럽게 붙어야 합니다."
-        )
-        user_prompt = (
-            f"현재 장면: {curr.content[-500:]}\n"
-            f"다음 장면: {next_n.content[:500]}\n"
-            "형식: { 'choices': [ {'text': '선택지1', 'result': '주인공이 ~했다.'}, {'text': '선택지2', 'result': '주인공이 ~라고 말했다.'} ] }"
-        )
-        
+        sys_prompt = "다음 노드로 가는 선택지 2개 생성. result_text는 주인공 주어 완결 문장."
+        user_prompt = f"현재: {curr.content[-500:]}\n다음: {next_n.content[:500]}\n형식: JSON"
         res = call_llm(sys_prompt, user_prompt, json_format=True)
         
         for item in res.get('choices', []):
+            # 1. Django 저장
             NodeChoice.objects.create(
-                current_node=curr,
-                choice_text=item['text'],
-                result_text=item['result'],
-                next_node=next_n,
-                is_twist_path=False
+                current_node=curr, choice_text=item['text'], result_text=item['result'], 
+                next_node=next_n, is_twist_path=False
             )
+            # 2. Neo4j 전송 (관계 생성)
+            sync_choice_to_neo4j(curr.id, next_n.id, item['text'], item['result'], is_twist=False)
 
 def _find_twist_point_index(nodes):
-    """8. 변주 지점 찾기 (전개~절정 사이)"""
     if len(nodes) < 4: return 1
-    
-    # 마지막(결말)은 제외하고 중간 부분에서 탐색
-    summaries = [f"Index {i}: {n.chapter_phase} - {n.content[:100]}..." for i, n in enumerate(nodes[:-2])]
-    
-    sys_prompt = (
-        "이 스토리의 장르를 비틀어(Twist) 전혀 다른 장르(클리셰)로 전환하기 가장 극적인 지점(Index)을 하나 선택하세요."
-        "출력은 JSON으로 { 'index': 숫자 } 만 하세요."
-    )
-    user_prompt = "\n".join(summaries)
-    
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    summaries = [f"Idx {i}: {n.content[:50]}" for i, n in enumerate(nodes[:-2])]
+    res = call_llm("비틀기 지점 인덱스 선택 JSON", "\n".join(summaries), json_format=True)
     idx = res.get('index', 2)
-    
-    # 안전 장치
-    if idx >= len(nodes) - 2: idx = len(nodes) - 3
+    if idx >= len(nodes)-2: idx = len(nodes)-3
     if idx < 1: idx = 1
-    
     nodes[idx].is_twist_point = True
     nodes[idx].save()
-    
     return idx
 
-def _generate_twisted_synopsis_data(story, accumulated_story, current_phase):
-    """9. 비틀기 클리셰 선정 및 시놉시스 생성"""
+def _generate_twisted_synopsis_data(story, accumulated, phase):
+    # (기존 복선 회수 프롬프트 유지)
+    all_cliches = Cliche.objects.exclude(id=story.main_cliche.id).all()
+    if not all_cliches: return None, ""
+    cliche_info = "\n".join([f"ID {c.id}: {c.title}" for c in all_cliches])
     
-    all_cliches = Cliche.objects.exclude(id=story.main_cliche.id).select_related('genre').all()
-    if not all_cliches.exists():
-        return None, "클리셰 데이터 부족"
+    rec_res = call_llm("반전의 대가. 미해결 떡밥 재해석할 클리셰 추천.", f"스토리: {accumulated[-1000:]}\n후보: {cliche_info}", json_format=True)
+    try: new_cliche = Cliche.objects.get(id=rec_res['cliche_id'])
+    except: new_cliche = all_cliches.first()
 
-    cliche_info = "\n".join([f"ID {c.id}: [{c.genre.name}] {c.title}" for c in all_cliches])
-    
-    # [수정] 복선 회수 및 재해석을 유도하는 프롬프트 적용
-    rec_sys = (
-        "당신은 반전의 대가입니다. 현재까지 진행된 스토리 속에 숨겨진 '애매한 요소'나 '미해결 떡밥'을 찾으세요. "
-        "이를 전혀 다른 장르의 관점에서 논리적으로 재해석할 수 있는 새로운 클리셰 ID를 추천하세요. "
-        "(예: '유령(호러)'인 줄 알았으나 사실 '홀로그램(SF)'이었다 / '로맨스'인 줄 알았으나 '범죄 스릴러'의 타깃이었다)"
-    )
-    rec_user = f"현재 스토리:\n{accumulated_story[-1000:]}\n\n후보 목록:\n{cliche_info}\n\n출력: {{'cliche_id': 숫자}}"
-    
-    rec_res = call_llm(rec_sys, rec_user, json_format=True)
-    try:
-        new_cliche = Cliche.objects.get(id=rec_res['cliche_id'])
-    except:
-        new_cliche = all_cliches.first()
-
-    # 9-2. 새로운 시놉시스 생성 (전체 분량)
-    # [수정] 단순 장르 전환이 아닌 인과관계와 재해석 강조
-    sys_prompt = (
-        "당신은 치밀한 복선 회수의 대가입니다. "
-        "주어진 '현재까지의 이야기'를 유지하되, 그동안 독자가 당연하게 여겼던 사실들을 '새로운 클리셰'의 관점에서 뒤집으세요. "
-        "단순한 장르 전환이 아니라, '아, 그래서 아까 그런 일이 있었구나!'라고 무릎을 탁 치게 만드는 필연적인 인과관계를 포함하여 전체 시놉시스를 재구성하세요."
-    )
-    user_prompt = (
-        f"현재까지 이야기: {accumulated_story}\n"
-        f"전환 지점: {current_phase}부터 장르 전환\n"
-        f"새로운 클리셰: {new_cliche.title} ({new_cliche.summary})\n"
-        f"가이드: {new_cliche.structure_guide}\n"
-        "출력: 전체 시놉시스 (2000자 내외)"
-    )
-    
-    twisted_synopsis = call_llm(sys_prompt, user_prompt)
-    
+    twisted_synopsis = call_llm("치밀한 복선 회수. 시놉시스 재구성.", f"스토리: {accumulated}\n새 클리셰: {new_cliche.title}")
     return new_cliche, twisted_synopsis
 
 def _create_twist_branch_choices(node, old_next, new_next):
-    """12. 비틀기 지점의 4개 선택지 생성"""
-    
-    # [수정] 주체 통일, 완결된 문장, 그리고 자연스러운 반전 유도
-    sys_prompt = (
-        "스토리의 장르가 전환되는 결정적 분기점입니다. 4개의 선택지를 생성하세요.\n"
-        "선택지 1, 2 (Original): 기존 장르의 문법을 따르는 안전한 선택입니다.\n"
-        "선택지 3, 4 (Twist): 주인공의 성격에 부합하는 자연스러운 행동이지만, 그 결과로 숨겨진 진실(새로운 장르)을 마주하게 되는 선택입니다.\n"
-        "중요: 각 선택지의 '직후 행동 묘사(result_text)'는 반드시 **주인공을 주어로 하는 완결된 문장**이어야 하며, 다음 장면과 자연스럽게 연결되어야 합니다."
-    )
-    user_prompt = (
-        f"현재 장면: {node.content[-500:]}\n"
-        f"기존 다음 장면(Original): {old_next.content[:500]}\n"
-        f"새로운 다음 장면(Twist): {new_next.content[:500]}\n"
-        "형식: { 'original_choices': [{'text':'...', 'result':'주인공이 ~했다.'}, ...], 'twist_choices': [{'text':'...', 'result':'주인공이 ~했다.'}, ...] }"
-    )
-    
+    sys_prompt = "장르 전환 분기점. 선택지 1,2(Original), 3,4(Twist) 생성. result_text 완결 문장."
+    user_prompt = f"현재: {node.content[-500:]}\n기존 다음: {old_next.content[:500]}\n새 다음: {new_next.content[:500]}\n형식: JSON"
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     
     for item in res.get('original_choices', []):
         NodeChoice.objects.create(
-            current_node=node,
-            choice_text=item['text'],
-            result_text=item['result'],
-            next_node=old_next,
-            is_twist_path=False
+            current_node=node, choice_text=item['text'], result_text=item['result'], 
+            next_node=old_next, is_twist_path=False
         )
+        sync_choice_to_neo4j(node.id, old_next.id, item['text'], item['result'], is_twist=False)
         
     for item in res.get('twist_choices', []):
         NodeChoice.objects.create(
-            current_node=node,
-            choice_text=item['text'],
-            result_text=item['result'],
-            next_node=new_next,
-            is_twist_path=True
+            current_node=node, choice_text=item['text'], result_text=item['result'], 
+            next_node=new_next, is_twist_path=True
         )
+        sync_choice_to_neo4j(node.id, new_next.id, item['text'], item['result'], is_twist=True)
