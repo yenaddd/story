@@ -145,6 +145,8 @@ def _get_latest_character_states(story):
     for s in states: latest_map[s.character_name] = s.state_data
     return json.dumps(latest_map, ensure_ascii=False)
 
+# story/llm_api.py
+
 def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_branch=False, universe_id=None):
     phases = ["발단", "전개", "절정", "결말"]
     nodes = []
@@ -154,6 +156,7 @@ def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_br
     context_note = "주의: Twist Branch입니다." if is_twist_branch else ""
     user_prompt = f"시놉시스: {synopsis}\n상태: {char_states_str}\n{context_note}\n형식: {{'scenes': [...]}}"
     
+    # LLM 호출
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     print(f"🔍 [Debug] LLM Response for Nodes: {res}") 
 
@@ -169,21 +172,49 @@ def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_br
         
         phase_name = phases[min(current_idx // 2, 3)]
         
+        # [수정] 유연한 데이터 추출 로직
+        # 1. 제목 추출
         title = scene_data.get('title', '무제')
-        setting = scene_data.get('setting', '')
-        characters = scene_data.get('characters_involved', [])
-        description = scene_data.get('description', '')
-        purpose = scene_data.get('purpose', '')
+        
+        # 2. 배경/설정 추출
+        setting = scene_data.get('setting') or scene_data.get('location') or ''
+        
+        # 3. 등장인물 추출 (리스트 or 문자열 처리)
+        raw_chars = scene_data.get('characters') or scene_data.get('characters_involved') or []
+        if isinstance(raw_chars, list):
+            characters = ", ".join(raw_chars)
+        else:
+            characters = str(raw_chars)
 
-        # Django DB 저장 (문자열)
-        django_content = f"[{title}]\n\n{description}"
+        # 4. 본문 내용 추출 (가장 중요! 여러 키를 확인)
+        description = (
+            scene_data.get('description') or 
+            scene_data.get('action') or 
+            scene_data.get('content') or 
+            scene_data.get('summary') or 
+            ''
+        )
+        
+        # 5. 의도/대사 추출
+        purpose = scene_data.get('purpose') or scene_data.get('key_dialogue') or ''
+        if isinstance(purpose, list): # 대사가 리스트로 올 경우 처리
+            purpose = " / ".join(purpose)
+
+        # [수정] Django 저장용 문자열 포맷팅 (풍성하게 구성)
+        django_content = f"[{title}]"
+        if setting:
+            django_content += f"\n(배경: {setting})"
+        django_content += f"\n\n{description}"
+        if purpose:
+            django_content += f"\n\n(Note: {purpose})"
+
+        # 1. Django DB 저장
         node = StoryNode.objects.create(story=story, chapter_phase=phase_name, content=django_content)
         nodes.append(node)
         
-        # Neo4j 전송 (ID 조합 적용)
+        # 2. Neo4j 전송
         if universe_id:
             try:
-                # [수정] ID 조합 생성: UUID_1, UUID_2 ...
                 neo4j_node_uid = f"{universe_id}_{node.id}"
                 
                 neo4j_data = StoryNodeData(
@@ -191,9 +222,9 @@ def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_br
                     phase=phase_name,
                     title=title,
                     setting=setting,
-                    characters=characters,
+                    characters=characters, # 문자열이 아닌 리스트 자체를 원하면 raw_chars 사용 (Neo4j 설정에 따라 다름)
                     description=description,
-                    purpose=purpose,
+                    purpose=str(purpose),
                     character_state=char_states_str
                 )
                 sync_node_to_neo4j(neo4j_data)
