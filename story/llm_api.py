@@ -8,7 +8,7 @@ from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 # DeepSeek API 설정 (환경변수 또는 하드코딩)
 # DeepSeek V3 API Base URL은 보통 https://api.deepseek.com 입니다.
 # 모델명은 사용 가능한 버전에 맞춰 설정하세요 (예: "deepseek-chat" or "deepseek-v3")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-your-key-here")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat"  # 연우님이 사용하실 V3.1 모델명으로 변경 가능
 
