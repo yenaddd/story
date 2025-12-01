@@ -1,358 +1,252 @@
+# story/llm_api.py
 import os
 import json
-import uuid 
-from openai import OpenAI
-from typing import List, Dict, Any, Optional
-from django.db import transaction, close_old_connections 
-from .models import StoryNode, NodeChoice
-import concurrent.futures 
+from openai import OpenAI  # DeepSeek는 OpenAI Compatible API 사용
+from django.conf import settings
+from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 
-# [수정] update_scene_choices 함수 import 추가
-from .neo4j_connection import create_scene_node, SceneNode, create_universe_node, UniverseNode, update_scene_choices
+# DeepSeek API 설정 (환경변수 또는 하드코딩)
+# DeepSeek V3 API Base URL은 보통 https://api.deepseek.com 입니다.
+# 모델명은 사용 가능한 버전에 맞춰 설정하세요 (예: "deepseek-chat" or "deepseek-v3")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-your-key-here")
+BASE_URL = "https://api.deepseek.com"
+MODEL_NAME = "deepseek-chat"  # 연우님이 사용하실 V3.1 모델명으로 변경 가능
 
-# --- GLOBAL CONFIGURATION ---
-GLOBAL_STORY_CONFIG = {
-    "WORLD_SETTING": "",
-    "ARC_INFO": {},
-    "BRANCH_CONFIG": [], 
-    "MAX_DEPTH": 0,
-    "STORY_TEXT_LENGTH": 7000,
-    "MAX_CONCURRENT_WORKERS": 3,
-    "OVERALL_STORY_PLOT": "",
-    "UNIVERSE_ID": "1" 
-}
+client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
-GPT_MODEL = "gpt-4o-mini"
-MAX_RETRIES = 3
-CRITIQUE_SCORE_THRESHOLD = 80 
-
-def get_openai_client():
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("Error: OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
-        raise ValueError("OpenAI API Key is missing in environment variables.")
-    return OpenAI()
-
-def set_global_config(world_setting: str, arc_type: str, branches: List[int], max_workers: int):
-    GLOBAL_STORY_CONFIG["WORLD_SETTING"] = world_setting
-    GLOBAL_STORY_CONFIG["ARC_INFO"] = {"arc": arc_type}
-    GLOBAL_STORY_CONFIG["BRANCH_CONFIG"] = branches
-    GLOBAL_STORY_CONFIG["MAX_DEPTH"] = len(branches)
-    GLOBAL_STORY_CONFIG["MAX_CONCURRENT_WORKERS"] = max_workers
-    
-    new_universe_id = str(uuid.uuid4())
-    GLOBAL_STORY_CONFIG["UNIVERSE_ID"] = new_universe_id
-    
-    print(f"Global Story Config Set: Depth={GLOBAL_STORY_CONFIG['MAX_DEPTH']}, UniverseID={new_universe_id}")
-
-def _get_freytag_stage_for_depth(current_depth: int, max_depth: int) -> str:
-    STAGE_NAMES = {
-        "Exposition": "발단 (Exposition)",
-        "Inciting Incident": "발단부의 갈등 (Inciting Incident)",
-        "Rising Action": "상승 (Rising Action)",
-        "Climax": "절정 (Climax)",
-        "Falling Action": "하강 (Falling Action)",
-        "Resolution": "결말 (Resolution)"
-    }
-    depth_stage_map_eng = [] 
-
-    if max_depth <= 0: return "Unknown"
-    elif max_depth == 1: depth_stage_map_eng = ["Exposition"]
-    elif max_depth == 2: depth_stage_map_eng = ["Climax", "Resolution"]
-    elif max_depth == 3: depth_stage_map_eng = ["Rising Action", "Climax", "Resolution"]
-    elif max_depth == 4: depth_stage_map_eng = ["Exposition", "Rising Action", "Climax", "Resolution"]
-    elif max_depth == 5: depth_stage_map_eng = ["Exposition", "Rising Action", "Climax", "Climax", "Resolution"]
-    elif max_depth >= 6:
-        stages_in_order = ["Exposition", "Inciting Incident", "Rising Action", "Climax", "Falling Action", "Resolution"]
-        scene_counts = {stage: 0 for stage in stages_in_order}
-        base_scenes = max_depth // 6
-        remainder_scenes = max_depth % 6
-        remainder_priority = ["Climax", "Rising Action", "Falling Action", "Inciting Incident", "Exposition"]
-
-        for stage in stages_in_order: scene_counts[stage] = base_scenes
-        for i in range(remainder_scenes):
-            if i < len(remainder_priority): scene_counts[remainder_priority[i]] += 1
-        for stage in stages_in_order:
-            depth_stage_map_eng.extend([stage] * scene_counts[stage])
-    
-    if not depth_stage_map_eng: return "Unknown"
-    stage_key = depth_stage_map_eng[current_depth] if 0 <= current_depth < len(depth_stage_map_eng) else depth_stage_map_eng[-1]
-    return STAGE_NAMES.get(stage_key, "Unknown Stage")
-
-def call_llm_flow_definer(world_setting: str, arc_type: str) -> str:
-    print("--- 전체흐름정의자(Flow Definer) AI 호출 ---")
+def call_llm(system_prompt, user_prompt, json_format=False):
+    """DeepSeek API 호출 래퍼"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
     try:
-        client = get_openai_client()
-        system_prompt = (
-            "당신은 천재적인 소설가이자 스토리 '전체흐름정의자'입니다. "
-            "사용자의 [세계관/인물 설정]과 [캐릭터 아크]를 바탕으로, 기승전결이 명확하고 "
-            "일관성 있는 '전체 스토리의 핵심 줄거리'를 30000자 내외로 생성해야 합니다. "
-            "생성되는 줄거리는 많은 문학작품 검색과 문학작품의 작품성 관련 연구결과 검색을 통해, 독자가 흥미를 느낄만한 요소가 많고 이야기의 개연성과 감동이 있어야합니다."
-        )
-        user_prompt = f"""
-        [세계관/인물 설정]: {world_setting}
-        [적용된 캐릭터 아크 이론]: {arc_type}
-        위 설정을 바탕으로, 주인공의 여정이 담긴 30000자 내외의 '전체 스토리 줄거리'를 생성하십시오.
-        """
+        response_format = {"type": "json_object"} if json_format else None
         response = client.chat.completions.create(
-            model=GPT_MODEL,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+            model=MODEL_NAME,
+            messages=messages,
+            response_format=response_format,
+            temperature=0.7,
+            max_tokens=4000 
         )
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+        if json_format:
+            return json.loads(content)
+        return content
     except Exception as e:
-        print(f"Flow Definer LLM Error: {e}")
-        return "전체 줄거리 생성 중 오류 발생"
+        print(f"LLM Error: {e}")
+        # 오류 시 빈 값 반환 혹은 재시도 로직 필요
+        return {} if json_format else ""
 
-def call_llm_initial_setup(world_setting: str) -> Dict[str, Any]:
-    print("--- 초기 설정 분석가(Setup Analyzer) AI 호출 ---")
-    try:
-        client = get_openai_client()
-        system_prompt = (
-            "당신은 소설 설정 분석가입니다. 사용자가 입력한 [세계관/인물 설정] 텍스트를 분석하여 "
-            "JSON 형식으로 추출해야 합니다.\n"
-            "1. relationships: { '등장인물 이름': '관계 및 태도 설명(문자열)' } 형태의 딕셔너리. (중첩 객체 금지)\n"
-            "2. state: 주인공의 심리 상태 (문자열)\n"
-            "3. title: 소설 제목 (문자열)"
-        )
-        user_prompt = f"[세계관/인물 설정]: {world_setting}"
-        response = client.chat.completions.create(
-            model=GPT_MODEL, response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception:
-        return {"relationships": {"시스템": "데이터 추출 실패"}, "state": "시작", "title": "생성된 스토리"}
+# --- 14단계 프로세스 구현 ---
 
-def _get_story_history(node_id: int) -> str:
-    if node_id <= 1: return "이야기 시작 지점"
-    try:
-        history_parts = []
-        current_node = StoryNode.objects.get(id=node_id)
-        while current_node is not None:
-            history_parts.append(f"[선택]: {current_node.parent_choice_text}")
-            history_parts.append(f"[장면 Depth {current_node.depth}]: {current_node.story_text}")
-            if current_node.parent_node_id is None: break
-            current_node = StoryNode.objects.get(id=current_node.parent_node_id)
-        history_parts.reverse()
-        return "\n-> ".join(history_parts)
-    except Exception as e:
-        return f"히스토리 생성 오류: {e}"
-
-def call_llm_architect(depth: int, context_node_data: Optional[Dict[str, Any]], last_critique: str, overall_story_plot: str, story_history: str) -> Dict[str, Any]:
-    config = GLOBAL_STORY_CONFIG
-    max_depth = config["MAX_DEPTH"]
+def create_story_pipeline(user_world_setting):
+    """전체 스토리 생성 파이프라인"""
     
-    try:
-        client = get_openai_client()
-        if context_node_data is None:
-             context_node_data = {'relationships': {}, 'state': '초기 상태', 'choice_text': '이야기 시작'}
-             
-        current_relationships = json.dumps(context_node_data.get('relationships', {}), ensure_ascii=False)
-        protagonist_state = context_node_data.get('state', '시작 상태')
-        parent_choice_text = context_node_data.get('choice_text', '없음')
-        stage = _get_freytag_stage_for_depth(depth, max_depth)
+    # 1. (입력됨) user_world_setting
+    
+    # 2. 클리셰 매칭
+    matched_cliche = _match_cliche(user_world_setting)
+    
+    story = Story.objects.create(
+        user_world_setting=user_world_setting,
+        main_cliche=matched_cliche
+    )
+
+    # 3. 초기 시놉시스 생성 (2000자 내외)
+    synopsis = _generate_initial_synopsis(story, matched_cliche)
+    story.synopsis = synopsis
+    story.save()
+
+    # 4. 인물 내면 변화 DB 저장 (초기)
+    _update_character_db(story, synopsis, is_initial=True)
+
+    # 5 & 6. 챕터별 줄거리 생성 및 노드화 (선형 구조)
+    nodes = _generate_linear_nodes(story, synopsis)
+
+    # 7. 노드 간 연결 및 선택지 생성 (Illusion Choice)
+    _connect_nodes_with_choices(nodes)
+
+    # 8. 클리셰 비틀기(Twist) 지점 찾기
+    twist_node_index = _find_twist_point(nodes)
+    twist_node = nodes[twist_node_index]
+    
+    story.twist_point_node_id = twist_node.id
+    story.save()
+
+    # 9. 비틀기 이후 새로운 시놉시스 생성 (하이브리드 장르)
+    new_synopsis, new_cliche = _generate_twisted_synopsis(story, nodes[:twist_node_index+1])
+    story.twisted_synopsis = new_synopsis
+    story.twist_cliche = new_cliche
+    story.save()
+
+    # 10. 인물 내면 변화 DB 업데이트 (새 시놉시스 반영)
+    _update_character_db(story, new_synopsis, is_initial=False)
+
+    # 11 & 11-2. 비틀린 이후의 새로운 노드 생성
+    new_branch_nodes = _generate_linear_nodes(story, new_synopsis, start_phase_index=twist_node_index+1)
+
+    # 12. 비틀기 지점(Twist Node)에서의 분기 처리 (기존 루트 vs 새 루트)
+    # 기존 노드의 '다음 노드'는 이미 7번 과정에서 생성된 nodes[twist_node_index+1] 입니다.
+    # 여기에 새로운 루트(new_branch_nodes[0])로 가는 선택지를 추가합니다.
+    _create_twist_choices(twist_node, nodes[twist_node_index+1], new_branch_nodes[0])
+
+    # 13. 새로 생성된 브랜치 내부 연결 (선형)
+    _connect_nodes_with_choices(new_branch_nodes)
+
+    return story.id
+
+# --- 내부 로직 함수들 ---
+
+def _match_cliche(setting):
+    # DB에 있는 모든 클리셰 정보를 가져와 프롬프트에 제공
+    all_cliches = Cliche.objects.select_related('genre').all()
+    cliche_info = "\n".join([f"ID {c.id}: [{c.genre.name}] {c.title} - {c.summary}" for c in all_cliches])
+    
+    sys_prompt = "당신은 스토리 분석가입니다. 사용자 설정에 가장 적합한 클리셰 ID를 JSON으로 반환하세요."
+    user_prompt = f"사용자 설정: {setting}\n\n보유 클리셰 목록:\n{cliche_info}\n\n출력형식: {{'cliche_id': 숫자}}"
+    
+    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    return Cliche.objects.get(id=res['cliche_id'])
+
+def _generate_initial_synopsis(story, cliche):
+    sys_prompt = (
+        "당신은 소설가입니다. 사용자 설정과 클리셰를 결합해 2000자 내외의 시놉시스를 작성하세요. "
+        "사건의 원인과 해결은 사용자 설정을 따르고, 감정선과 갈등 단계는 클리셰를 벤치마킹하세요."
+    )
+    user_prompt = (
+        f"설정: {story.user_world_setting}\n"
+        f"클리셰: {cliche.title}\n"
+        f"클리셰 가이드: {cliche.structure_guide}\n"
+        f"참고 작품 줄거리: {cliche.example_work_summary}"
+    )
+    return call_llm(sys_prompt, user_prompt)
+
+def _update_character_db(story, text_content, is_initial=False):
+    # 4번, 10번: 내면 상태 추출
+    sys_prompt = (
+        "텍스트를 분석하여 등장인물들의 '내면 상태'를 JSON으로 추출하세요. "
+        "감정, 신뢰도, 사상, 육체적 상태 등의 변화를 구체적으로 기록해야 합니다."
+    )
+    res = call_llm(sys_prompt, f"분석할 텍스트:\n{text_content}", json_format=True)
+    
+    # DB 저장 (단순화를 위해 덮어쓰거나 누적)
+    for name, state in res.items():
+        char_state, created = CharacterState.objects.get_or_create(story=story, character_name=name)
+        # 기존 상태와 병합 로직 (여기선 단순 갱신)
+        char_state.state_data = state
+        char_state.save()
+
+def _generate_linear_nodes(story, synopsis, start_phase_index=0):
+    # 5, 6번: 챕터별 2개 노드 생성 (총 4챕터 * 2 = 8노드 구조라고 가정)
+    # start_phase_index가 있다면 그 지점부터 생성 (Twist 이후 생성 시)
+    
+    phases = ["발단", "전개", "절정", "결말"]
+    nodes = []
+    
+    # 현재 저장된 캐릭터 상태 가져오기
+    char_states = CharacterState.objects.filter(story=story)
+    states_str = json.dumps({c.character_name: c.state_data for c in char_states}, ensure_ascii=False)
+
+    current_prev_node = None
+    
+    # 전체 시놉시스를 4단계로 나누는 로직 (LLM에게 요청)
+    sys_prompt = "시놉시스를 발단, 전개, 절정, 결말 4단계로 나누고, 각 단계를 다시 2개의 상세 장면(Scene)으로 나누어 총 8개의 줄거리(각 2000자)를 JSON 리스트로 만드세요."
+    user_prompt = f"시놉시스: {synopsis}\n인물상태: {states_str}\n형식: {{'scenes': [text1, text2, ..., text8]}}"
+    
+    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    scenes = res.get('scenes', [])
+
+    # 인덱스 조정 (부분 생성일 경우)
+    target_scenes = scenes[start_phase_index * 2:] 
+    
+    for i, content in enumerate(target_scenes):
+        phase_idx = (start_phase_index * 2 + i) // 2
+        if phase_idx >= 4: break
         
-        system_prompt = "당신은 최고의 스토리 기획자입니다. JSON 형식으로 응답하십시오."
-        user_prompt = f"""
-        [세계관]: {config["WORLD_SETTING"]}
-        [전체 줄거리]: {overall_story_plot}
-        [스토리 히스토리]: {story_history}
-        [현재 상태]: 행동='{parent_choice_text}', 심리='{protagonist_state}', 관계='{current_relationships}', Depth={depth}
-        [피드백]: {last_critique}
-        [임무]: Freytag 단계({stage})에 맞는 다음 장면 기획.
+        node = StoryNode.objects.create(
+            story=story,
+            chapter_phase=phases[phase_idx],
+            content=content,
+            prev_node=current_prev_node
+        )
+        nodes.append(node)
+        current_prev_node = node
         
-        응답 형식: 
-        {{
-            "freytag_stage": "...", 
-            "plot_summary": "...", 
-            "new_relationships": {{ "캐릭터이름": "관계변화설명(문자열)" }}, 
-            "new_protagonist_state": "..."
-        }}
-        * 주의: relationships의 값은 반드시 객체가 아닌 '문자열'이어야 합니다.
-        """
-        response = client.chat.completions.create(
-            model=GPT_MODEL, response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        )
-        result = json.loads(response.choices[0].message.content)
-        result['freytag_stage'] = stage
-        return result
-    except Exception as e:
-        print(f"Architect Error: {e}")
-        return {"freytag_stage": "Error", "plot_summary": "Error", "new_relationships": {}, "new_protagonist_state": ""}
+    return nodes
 
-def call_llm_critic(architect_result: Dict[str, Any], context: Dict[str, Any], overall_story_plot: str, story_history: str) -> Dict[str, Any]:
-    try:
-        client = get_openai_client()
-        system_prompt = "당신은 스토리 기획안의 개연성을 평가하는 감독입니다. 점수(0-100)와 지침을 JSON으로 반환하십시오."
-        user_prompt = f"""
-        [전체 줄거리]: {overall_story_plot}
-        [히스토리]: {story_history}
-        [기획안]: {json.dumps(architect_result, ensure_ascii=False)}
-        응답 형식: {{"score": 85, "critique": "..."}}
-        """
-        response = client.chat.completions.create(
-            model=GPT_MODEL, response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        )
-        data = json.loads(response.choices[0].message.content)
-        return {"score": int(data.get('score', 0)), "critique": data.get('critique', '')}
-    except Exception:
-        return {"score": 0, "critique": "Error"}
-
-def call_llm_choices(plot_summary_text: str, num_choices: int, overall_story_plot: str) -> List[str]:
-    try:
-        client = get_openai_client()
-        system_prompt = f"당신은 분기점 설계자입니다. {num_choices}개의 상반된 선택지를 JSON 배열로 생성하십시오."
-        user_prompt = f"[전체 줄거리]: {overall_story_plot}\n[현재 상황]: {plot_summary_text}\n응답 형식: {{\"choices\": [\"선택1\", \"선택2\"]}}"
-        response = client.chat.completions.create(
-            model=GPT_MODEL, response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        )
-        return json.loads(response.choices[0].message.content).get('choices', [])
-    except Exception:
-        return [f"선택지 {i+1}" for i in range(num_choices)]
-
-
-def _generate_single_node(parent_node_id: int, choice_text: str, parent_relationships=None, parent_state=None) -> StoryNode:
-    config = GLOBAL_STORY_CONFIG
-    overall_story_plot = config.get("OVERALL_STORY_PLOT", "")
-    universe_id = config.get("UNIVERSE_ID", "1") 
+def _connect_nodes_with_choices(nodes):
+    # 7, 13번: 선형 구조 연결 (선택지는 다르지만 결과 노드는 같음)
+    # nodes 리스트는 순서대로 연결되어 있음 [Node1, Node2, Node3 ...]
     
-    story_history = _get_story_history(parent_node_id)
-    story_title = "새로운 스토리"
-
-    if parent_node_id == 0:
-        new_node_depth = 0
-        setup_data = call_llm_initial_setup(config["WORLD_SETTING"])
-        context_data = {
-            'relationships': setup_data.get('relationships', {}),
-            'state': setup_data.get('state', '시작'),
-            'choice_text': choice_text
-        }
-        story_title = setup_data.get('title', '생성된 스토리')
-    else:
-        if parent_relationships is None:
-            parent_node = StoryNode.objects.get(id=parent_node_id)
-            parent_relationships = parent_node.current_relationships
-            parent_state = parent_node.protagonist_state
-        context_data = {'relationships': parent_relationships, 'state': parent_state, 'choice_text': choice_text}
-        new_node_depth = StoryNode.objects.get(id=parent_node_id).depth + 1
-
-    last_critique = "첫 시도"
-    for attempt in range(1, MAX_RETRIES + 1):
-        architect_result = call_llm_architect(new_node_depth, context_data, last_critique, overall_story_plot, story_history)
-        if architect_result['plot_summary'] == "Error": continue
-
-        critique_result = call_llm_critic(architect_result, context_data, overall_story_plot, story_history)
-        score = critique_result['score']
-        last_critique = critique_result['critique']
-        print(f"Depth {new_node_depth} 시도 {attempt}: {score}점")
-
-        if score >= CRITIQUE_SCORE_THRESHOLD or attempt == MAX_RETRIES:
-            new_node = StoryNode.objects.create(
-                depth=new_node_depth,
-                freytag_stage=architect_result.get('freytag_stage'),
-                parent_node_id=parent_node_id if parent_node_id != 0 else None,
-                parent_choice_text=choice_text,
-                current_relationships=architect_result.get('new_relationships'),
-                protagonist_state=architect_result.get('new_protagonist_state'),
-                story_text=architect_result.get('plot_summary'),
-                critique_score=score
+    for i in range(len(nodes) - 1):
+        curr = nodes[i]
+        next_n = nodes[i+1]
+        
+        sys_prompt = (
+            "현재 장면과 다음 장면을 잇는 2개의 선택지를 만드세요. "
+            "각 선택지에 대해 '직후 행동/결과(result_text)'를 한 문장으로 생성하세요. "
+            "어떤 선택을 하든 다음 장면으로 자연스럽게 이어져야 합니다."
+        )
+        user_prompt = f"현재 장면: {curr.content[-500:]}\n다음 장면: {next_n.content[:500]}\n형식: {{'choices': [{{'text': '...', 'result': '...'}}, {{'text': '...', 'result': '...'}}]}}"
+        
+        res = call_llm(sys_prompt, user_prompt, json_format=True)
+        
+        for item in res.get('choices', []):
+            NodeChoice.objects.create(
+                current_node=curr,
+                choice_text=item['text'],
+                result_text=item['result'],
+                next_node=next_n
             )
-            
-            # Neo4j Sync
-            try:
-                # [수정 포인트] ID 충돌 방지를 위한 "고유 ID(Composite Key)" 생성
-                # 예: "uuid-1234-5678_1" (우주ID_노드ID)
-                unique_node_id = f"{universe_id}_{new_node.id}"
-                
-                # 부모 노드 ID도 같은 방식으로 변환 (루트가 아닐 경우)
-                unique_parent_id = f"{universe_id}_{parent_node_id}" if parent_node_id else None
-                neo_scene = SceneNode(
-                    universe_id=universe_id, 
-                    depth=new_node.depth, 
-                    node_id=unique_node_id,
-                    freytag_stage=new_node.freytag_stage,
-                    parent_node_id=unique_parent_id,
-                    parent_choice_text=choice_text,
-                    story_text=new_node.story_text,
-                    protagonist_state=new_node.protagonist_state,
-                    current_relationships=new_node.current_relationships,
-                    critique_score=new_node.critique_score
-                )
-                if new_node.depth == 0:
-                    create_universe_node(UniverseNode(universe_id=universe_id, title=story_title))
-                create_scene_node(neo_scene)
-                print(f"  -> Neo4j Sync 완료: Node {new_node.id}")
-            except Exception as e:
-                print(f"  -> Neo4j Sync 실패: {e}")
-            
-            return new_node
-    raise Exception("노드 생성 실패")
 
-def generate_full_story_tree(parent_node_id: int, choice_text: str, parent_relationships=None, parent_state=None) -> StoryNode:
-    close_old_connections()
+def _find_twist_point(nodes):
+    # 8번: 변주 지점 찾기 (랜덤 혹은 LLM 판단)
+    # 마지막 노드 제외하고 중간(전개~절정 사이)에서 하나 선택
+    sys_prompt = "전체 스토리 흐름에서 장르를 비틀어 새로운 전개를 시작하기 가장 좋은 지점(노드 인덱스)을 하나 찾으세요. (0부터 시작)"
+    summary_list = [n.content[:200] for n in nodes]
+    user_prompt = f"장면들: {summary_list}\n형식: {{'index': 3}}"
     
-    try:
-        config = GLOBAL_STORY_CONFIG
-        max_depth = config["MAX_DEPTH"]
-        branch_config = config["BRANCH_CONFIG"]
-        max_workers = config.get("MAX_CONCURRENT_WORKERS", 4)
-        overall_story_plot = config.get("OVERALL_STORY_PLOT", "")
-        
-        # 현재 노드 생성
-        current_node = _generate_single_node(parent_node_id, choice_text, parent_relationships, parent_state)
-        new_node_depth = current_node.depth
-        
-        # [수정됨] 종료 조건 완화: Depth가 max_depth와 같아질 때까지 진행
-        # 기존: new_node_depth >= (max_depth - 1)  <-- Depth 2에서 멈춤
-        # 수정: new_node_depth >= max_depth        <-- Depth 3까지 감
-        is_ending_node = new_node_depth >= max_depth
+    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    idx = res.get('index', 3)
+    # 안전장치
+    if idx >= len(nodes) - 1 or idx < 1: idx = 3 
+    return idx
 
-        if parent_node_id != 0:
-            with transaction.atomic():
-                try:
-                    choice = NodeChoice.objects.get(parent_node_id=parent_node_id, choice_text=choice_text)
-                    choice.next_node = current_node
-                    choice.save()
-                except Exception: pass
+def _generate_twisted_synopsis(story, accumulated_nodes):
+    # 9번: 트위스트 시놉시스 생성
+    current_story = "\n".join([n.content for n in accumulated_nodes])
+    current_phase = accumulated_nodes[-1].chapter_phase
+    
+    # 어울리지 않는 다른 장르/클리셰 랜덤 매칭 (여기선 LLM에게 추천받음)
+    sys_prompt = "현재까지의 이야기와 전혀 다른 반전 매력을 줄 수 있는 '새로운 장르 클리셰'를 추천하고, 이를 결합해 이후의 시놉시스를 새로 쓰세요."
+    user_prompt = f"현재까지 이야기: {current_story}\n현재 단계: {current_phase}"
+    
+    # 시놉시스 텍스트 생성 (JSON 아님)
+    new_synopsis = call_llm(sys_prompt, user_prompt)
+    
+    # (약식) 새 클리셰 정보는 DB에 없어도 되지만 형식상 하나 매칭하거나 생성
+    # 여기선 None으로 두거나 더미 로직 사용
+    return new_synopsis, None 
 
-        if not is_ending_node:
-            try: num_choices = branch_config[new_node_depth]
-            except: num_choices = 2
-            
-            choice_texts = call_llm_choices(current_node.story_text, num_choices, overall_story_plot)
-            
-            # Neo4j에 선택지 업데이트
-            try:
-                universe_id = config.get("UNIVERSE_ID", "1")
-                unique_node_id = f"{universe_id}_{current_node.id}"
-                
-                update_scene_choices(unique_node_id, choice_texts)
-            except Exception as e:
-                print(f"Neo4j Choice Update Failed: {e}")
-
-            choices_to_process = []
-            
-            with transaction.atomic():
-                for text in choice_texts:
-                    NodeChoice.objects.create(parent_node=current_node, choice_text=text)
-                    choices_to_process.append(text)
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for text in choices_to_process:
-                    future = executor.submit(
-                        generate_full_story_tree, 
-                        parent_node_id=current_node.id, 
-                        choice_text=text,
-                        parent_relationships=current_node.current_relationships,
-                        parent_state=current_node.protagonist_state
-                    )
-                    futures.append(future)
-                concurrent.futures.wait(futures)
-        
-        return current_node
-        
-    finally:
-        close_old_connections()
+def _create_twist_choices(node, original_next, new_next):
+    # 12번: 4개의 선택지 (2개 -> 기존, 2개 -> 신규)
+    # 이미 _connect_nodes_with_choices로 기존 2개는 생성되어 있음.
+    # 추가로 신규 루트로 가는 2개를 생성.
+    
+    sys_prompt = (
+        "장르가 급격히 바뀌는 분기점입니다. "
+        "기존 스토리와 다른, 새로운 전개(예: 뱀파이어 등장 등)로 이어지는 선택지 2개를 만드세요."
+    )
+    user_prompt = f"현재 장면: {node.content[-500:]}\n새로운 전개 시작: {new_next.content[:500]}"
+    
+    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    
+    for item in res.get('choices', []):
+        NodeChoice.objects.create(
+            current_node=node,
+            choice_text=item['text'],
+            result_text=item['result'],
+            next_node=new_next,
+            is_twist_path=True # 이것이 변주 경로임
+        )
