@@ -8,7 +8,8 @@ from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 # API 설정
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 BASE_URL = "https://api.fireworks.ai/inference/v1"
-MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1"
+# 모델명은 사용 가능한 최신 모델로 설정 (예: llama-v3-70b-instruct 등)
+MODEL_NAME = "accounts/fireworks/models/llama-v3-70b-instruct" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
@@ -52,17 +53,10 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
             
         except Exception as e:
             print(f"LLM Critical Error: {e}")
-            # 치명적 오류(네트워크 등)는 바로 종료하거나 필요시 재시도 로직 추가 가능
             return {} if json_format else ""
 
     return {} if json_format else ""
 
-# ==========================================
-# [메인 파이프라인] 14단계 프로세스
-# ==========================================
-# ... (이후 create_story_pipeline 및 내부 함수들은 기존과 동일하므로 생략) ...
-# 기존 로직 유지: create_story_pipeline, _match_cliche, _generate_synopsis 등
-# 위 call_llm 함수만 교체해주시면 됩니다.
 # ==========================================
 # [메인 파이프라인] 14단계 프로세스
 # ==========================================
@@ -87,7 +81,8 @@ def create_story_pipeline(user_world_setting):
     _analyze_and_save_character_state(story, synopsis, context="Initial Synopsis")
 
     # 5 & 6. 챕터별 줄거리 생성 및 노드화 (선형 구조, 총 8노드)
-    original_nodes = _create_nodes_from_synopsis(story, synopsis, start_phase_idx=0)
+    # 초기 생성은 처음(0)부터 시작
+    original_nodes = _create_nodes_from_synopsis(story, synopsis, start_node_index=0)
 
     # 7. 선형 노드 간 연결 (Illusion of Choice)
     _connect_linear_nodes(original_nodes)
@@ -103,7 +98,6 @@ def create_story_pipeline(user_world_setting):
     accumulated_story = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     current_phase = twist_node.chapter_phase
     
-    # [수정] 실제 DB에서 Twist용 클리셰를 추천받아 매칭
     twist_cliche, twisted_synopsis = _generate_twisted_synopsis_data(story, accumulated_story, current_phase)
     
     story.twist_cliche = twist_cliche
@@ -114,13 +108,12 @@ def create_story_pipeline(user_world_setting):
     _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
 
     # 11 & 11-2. 비틀린 이후의 새로운 노드 생성
-    # twist_node_index 이후의 단계부터 새로 생성합니다.
-    # 예: index 3(전개-하)에서 비틀면, index 4(절정-상)부터 새로 만듭니다.
-    next_start_idx = (twist_node_index // 2) + 1
+    # [수정] 중요: 비틀기 지점 바로 다음 인덱스부터 빈틈없이 생성하도록 수정
+    # 기존 로직은 챕터 단위로 건너뛰어 일부 구간이 소실되는 문제가 있었음.
     new_branch_nodes = _create_nodes_from_synopsis(
         story, 
         twisted_synopsis, 
-        start_phase_idx=next_start_idx, 
+        start_node_index=twist_node_index + 1, 
         is_twist_branch=True
     )
 
@@ -204,8 +197,11 @@ def _get_latest_character_states(story):
         latest_map[s.character_name] = s.state_data
     return json.dumps(latest_map, ensure_ascii=False)
 
-def _create_nodes_from_synopsis(story, synopsis, start_phase_idx=0, is_twist_branch=False):
-    """5, 6, 11. 챕터별 줄거리 생성 및 노드화 (각 챕터당 2노드)"""
+def _create_nodes_from_synopsis(story, synopsis, start_node_index=0, is_twist_branch=False):
+    """
+    5, 6, 11. 상세 줄거리 생성 및 노드화
+    [수정] start_phase_idx 대신 start_node_index(0~7)를 받아 정밀하게 슬라이싱
+    """
     phases = ["발단", "전개", "절정", "결말"]
     nodes = []
     
@@ -219,7 +215,6 @@ def _create_nodes_from_synopsis(story, synopsis, start_phase_idx=0, is_twist_bra
         "인물의 내면 상태와 행동이 모순되지 않도록 주의하세요."
     )
     
-    # [중요] Twist 브랜치일 경우, 시놉시스 전체를 주되 흐름을 유지하도록 강조
     context_note = ""
     if is_twist_branch:
         context_note = "주의: 이 시놉시스는 중간에 장르가 바뀐(Twist) 이야기입니다. 전체 흐름을 고려하여 8개 씬을 모두 완성하세요."
@@ -234,22 +229,17 @@ def _create_nodes_from_synopsis(story, synopsis, start_phase_idx=0, is_twist_bra
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     scenes = res.get('scenes', [])
     
-    # 필요한 부분만 슬라이싱
-    # start_phase_idx (0~3). 0=발단, 1=전개, 2=절정, 3=결말
-    start_list_idx = start_phase_idx * 2
-    
-    # 만약 LLM이 8개를 다 안 주고 남은 것만 줬을 경우를 대비한 방어 로직
-    if len(scenes) < 8 and is_twist_branch:
-         # LLM이 똑똑해서 남은 부분만 줬다고 가정하고 그대로 씀
-         target_scenes = scenes
-    else:
-         target_scenes = scenes[start_list_idx:]
+    # [수정] 인덱스 기반으로 필요한 부분만 정확히 슬라이싱
+    # start_node_index가 3이면, scenes[3:]부터 가져옴 (총 8개 중)
+    target_scenes = scenes[start_node_index:]
     
     for i, content in enumerate(target_scenes):
-        total_idx = start_list_idx + i
-        if total_idx >= 8: break # 인덱스 초과 방지
+        # 현재 생성 중인 노드의 전체 인덱스 (0~7)
+        current_idx = start_node_index + i
+        if current_idx >= 8: break # 8개 초과 방지
         
-        phase_name = phases[min(total_idx // 2, 3)]
+        # 0,1->발단(0) / 2,3->전개(1) / 4,5->절정(2) / 6,7->결말(3)
+        phase_name = phases[min(current_idx // 2, 3)]
         
         node = StoryNode.objects.create(
             story=story,
@@ -269,16 +259,19 @@ def _connect_linear_nodes(nodes):
         next_n.prev_node = curr
         next_n.save()
         
+        # [수정] 주체 통일 및 완결된 문장 요구사항 반영
         sys_prompt = (
             "현재 노드에서 다음 노드로 넘어가기 위한 선택지 2개를 만드세요. "
             "이 선택지들은 스토리를 분기시키지 않고, 동일한 다음 노드로 이어집니다. "
-            "각 선택지에 대해 '선택 직후의 짧은 행동 묘사(result_text)'를 생성하세요. "
-            "result_text는 다음 노드의 첫 문장 앞에 자연스럽게 붙어야 합니다."
+            "각 선택지에 대해 '선택지 선택 직후 이어지는 주인공의 행동이나 대사(result_text)'를 생성하세요. "
+            "조건 1: result_text는 반드시 **주인공을 주어로 하는 완결된 문장**이어야 합니다. "
+            "(예: '나는 조용히 문을 열었다.', '그는 화가 나서 소리쳤다.') "
+            "조건 2: result_text는 다음 노드의 첫 문장 앞에 자연스럽게 붙어야 합니다."
         )
         user_prompt = (
             f"현재 장면: {curr.content[-500:]}\n"
             f"다음 장면: {next_n.content[:500]}\n"
-            "형식: { 'choices': [ {'text': '선택지1', 'result': '직후묘사1'}, {'text': '선택지2', 'result': '직후묘사2'} ] }"
+            "형식: { 'choices': [ {'text': '선택지1', 'result': '주인공이 ~했다.'}, {'text': '선택지2', 'result': '주인공이 ~라고 말했다.'} ] }"
         )
         
         res = call_llm(sys_prompt, user_prompt, json_format=True)
@@ -320,16 +313,18 @@ def _find_twist_point_index(nodes):
 def _generate_twisted_synopsis_data(story, accumulated_story, current_phase):
     """9. 비틀기 클리셰 선정 및 시놉시스 생성"""
     
-    # 9-1. 새로운 클리셰 추천 (DB에서 찾기)
     all_cliches = Cliche.objects.exclude(id=story.main_cliche.id).select_related('genre').all()
     if not all_cliches.exists():
         return None, "클리셰 데이터 부족"
 
     cliche_info = "\n".join([f"ID {c.id}: [{c.genre.name}] {c.title}" for c in all_cliches])
     
-    rec_sys = "당신은 반전의 대가입니다. 현재까지 진행된 스토리 속에 숨겨진 '애매한 요소'나 '미해결 떡밥'을 찾으세요. "
-    "이를 전혀 다른 장르의 관점에서 논리적으로 재해석할 수 있는 새로운 클리셰 ID를 추천하세요. "
-    "(예: '유령(호러)'인 줄 알았으나 사실 '홀로그램(SF)'이었다 / '로맨스'인 줄 알았으나 '범죄 스릴러'의 타깃이었다)"
+    # [수정] 복선 회수 및 재해석을 유도하는 프롬프트 적용
+    rec_sys = (
+        "당신은 반전의 대가입니다. 현재까지 진행된 스토리 속에 숨겨진 '애매한 요소'나 '미해결 떡밥'을 찾으세요. "
+        "이를 전혀 다른 장르의 관점에서 논리적으로 재해석할 수 있는 새로운 클리셰 ID를 추천하세요. "
+        "(예: '유령(호러)'인 줄 알았으나 사실 '홀로그램(SF)'이었다 / '로맨스'인 줄 알았으나 '범죄 스릴러'의 타깃이었다)"
+    )
     rec_user = f"현재 스토리:\n{accumulated_story[-1000:]}\n\n후보 목록:\n{cliche_info}\n\n출력: {{'cliche_id': 숫자}}"
     
     rec_res = call_llm(rec_sys, rec_user, json_format=True)
@@ -339,6 +334,7 @@ def _generate_twisted_synopsis_data(story, accumulated_story, current_phase):
         new_cliche = all_cliches.first()
 
     # 9-2. 새로운 시놉시스 생성 (전체 분량)
+    # [수정] 단순 장르 전환이 아닌 인과관계와 재해석 강조
     sys_prompt = (
         "당신은 치밀한 복선 회수의 대가입니다. "
         "주어진 '현재까지의 이야기'를 유지하되, 그동안 독자가 당연하게 여겼던 사실들을 '새로운 클리셰'의 관점에서 뒤집으세요. "
@@ -359,17 +355,18 @@ def _generate_twisted_synopsis_data(story, accumulated_story, current_phase):
 def _create_twist_branch_choices(node, old_next, new_next):
     """12. 비틀기 지점의 4개 선택지 생성"""
     
+    # [수정] 주체 통일, 완결된 문장, 그리고 자연스러운 반전 유도
     sys_prompt = (
         "스토리의 장르가 전환되는 결정적 분기점입니다. 4개의 선택지를 생성하세요.\n"
         "선택지 1, 2 (Original): 기존 장르의 문법을 따르는 안전한 선택입니다.\n"
         "선택지 3, 4 (Twist): 주인공의 성격에 부합하는 자연스러운 행동이지만, 그 결과로 숨겨진 진실(새로운 장르)을 마주하게 되는 선택입니다.\n"
-        "주의: 선택지 텍스트 자체는 너무 뜬금없지 않아야 합니다. 선택에 따른 '직후 행동 묘사(result_text)'에서 충격적인 진실이 드러나게 하세요."
+        "중요: 각 선택지의 '직후 행동 묘사(result_text)'는 반드시 **주인공을 주어로 하는 완결된 문장**이어야 하며, 다음 장면과 자연스럽게 연결되어야 합니다."
     )
     user_prompt = (
         f"현재 장면: {node.content[-500:]}\n"
         f"기존 다음 장면(Original): {old_next.content[:500]}\n"
         f"새로운 다음 장면(Twist): {new_next.content[:500]}\n"
-        "형식: { 'original_choices': [{'text':'...', 'result':'...'}, ...], 'twist_choices': [{'text':'...', 'result':'...'}, ...] }"
+        "형식: { 'original_choices': [{'text':'...', 'result':'주인공이 ~했다.'}, ...], 'twist_choices': [{'text':'...', 'result':'주인공이 ~했다.'}, ...] }"
     )
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
