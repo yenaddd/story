@@ -22,21 +22,37 @@ MODEL_NAME = "accounts/fireworks/models/llama-v3-70b-instruct"
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
-    # (기존 코드 유지)
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
+    if not DEEPSEEK_API_KEY:
+        print("🚨 [Critical] API Key is MISSING! (.env 파일을 확인해주세요)")
+        return {} if json_format else ""
+
     for attempt in range(max_retries):
         try:
+            # 타임아웃 설정 추가 권장 (예: timeout=30)
             response = client.chat.completions.create(
-                model=MODEL_NAME, messages=messages, response_format=response_format, temperature=0.7, max_tokens=4000 
+                model=MODEL_NAME, 
+                messages=messages, 
+                response_format=response_format, 
+                temperature=0.7, 
+                max_tokens=4000,
+                timeout=45  # [추가] 네트워크 지연 대비 타임아웃 설정
             )
             content = response.choices[0].message.content
             if json_format:
-                cleaned = content.replace("```json", "").replace("```", "")
+                # 마크다운 제거 등 전처리
+                cleaned = content.replace("```json", "").replace("```", "").strip()
                 return json.loads(cleaned)
             return content
-        except Exception:
+
+        except Exception as e:
+            # [핵심 수정] 에러를 숨기지 말고 출력해야 합니다.
+            print(f"⚠️ [LLM Error] Attempt {attempt+1}/{max_retries} Failed: {str(e)}")
             time.sleep(1)
+            
+    # 모든 재시도 실패 시
+    print(f"❌ [Final Fail] LLM Call Failed completely.")
     return {} if json_format else ""
 
 # ==========================================
