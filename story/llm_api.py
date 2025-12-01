@@ -9,9 +9,8 @@ from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 # DeepSeek V3 API Base URL은 보통 https://api.deepseek.com 입니다.
 # 모델명은 사용 가능한 버전에 맞춰 설정하세요 (예: "deepseek-chat" or "deepseek-v3")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-BASE_URL = "https://api.deepseek.com"
-MODEL_NAME = "deepseek-chat"  # 연우님이 사용하실 V3.1 모델명으로 변경 가능
-
+BASE_URL = "https://api.fireworks.ai/inference/v1"
+MODEL_NAME = "accounts/fireworks/models/deepseek-v3"
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 def call_llm(system_prompt, user_prompt, json_format=False):
