@@ -30,7 +30,7 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            # [수정] max_tokens 5000 이상일 경우 stream=True 필수
+            # max_tokens 5000 이상일 경우 stream=True 필수
             stream_option = True
             
             response = client.chat.completions.create(
@@ -100,7 +100,6 @@ def create_story_pipeline(user_world_setting):
     )
     
     if not original_nodes or len(original_nodes) < 2:
-        # 에러 발생 시 로그 출력 강화
         print("❌ [Error] 노드 생성 실패. LLM 응답이 비어있거나 형식이 잘못되었습니다.")
         raise ValueError("AI가 스토리 노드를 생성하지 못했습니다.")  
     
@@ -129,6 +128,7 @@ def create_story_pipeline(user_world_setting):
     accumulated = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
     # 8. 비틀린 시놉시스 생성
+    # [수정] 같은 장르 내 다른 클리셰로 비틀기
     twist_cliche, twisted_synopsis = _generate_twisted_synopsis_data(story, accumulated, twist_node.chapter_phase)
     story.twist_cliche = twist_cliche
     story.twisted_synopsis = twisted_synopsis
@@ -192,10 +192,12 @@ def _match_cliche(setting):
     except: return all_cliches.first()
 
 def _generate_synopsis(story, cliche, protagonist_name):
+    # [수정] 한자 사용 금지 명시
     sys_prompt = (
         "당신은 베스트셀러 소설가입니다. 다음 설정과 클리셰 구조를 바탕으로 기승전결이 확실한 시놉시스를 작성하세요. "
         "문체는 반드시 '~한다', '~했다'로 끝나는 건조한 서술체를 사용하세요. "
-        "불필요한 기호나 마크다운 헤더를 쓰지 말고 줄글로 작성하세요."
+        "불필요한 기호나 마크다운 헤더를 쓰지 말고 줄글로 작성하세요. "
+        "**절대 한자(Chinese Characters)를 사용하지 마십시오. 오직 한글로만 작성해야 합니다.**"
     )
     user_prompt = (
         f"세계관: {story.user_world_setting}\n"
@@ -235,11 +237,15 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     nodes = []
     char_states_str = _get_latest_character_states(story)
 
+    # [수정] 행동의 이유 설명 및 한자 사용 금지 추가
     sys_prompt = (
         f"당신은 소설가입니다. 시놉시스를 바탕으로 상세한 장면(Scene)들을 생성해야 합니다. "
         f"주인공은 '{protagonist_name}'입니다. "
         "각 장면의 'content'는 반드시 **공백 포함 1000자 이상의 아주 구체적이고 묘사가 풍부한 줄거리**여야 합니다. "
         "문체는 '~한다' 체로 통일하고, 마크다운 헤더(#)나 불필요한 서식을 넣지 마세요. 순수 줄거리만 작성하세요. "
+        "**[중요] 인물이 특정 행동을 할 때는, 반드시 그 행동을 하는 이유와 내면의 동기를 명시적으로 설명해야 합니다.** "
+        "개연성 확보를 위해 '왜' 그 행동을 하는지 서술하세요. "
+        "**절대 한자(Chinese Characters)를 섞어 쓰지 마십시오. 모든 단어는 한글로 표기하세요.** "
         "인물들의 내면 상태(Character State)와 행동이 모순되지 않도록 주의하세요."
     )
     
@@ -355,12 +361,18 @@ def _find_twist_point_index(nodes):
     return idx
 
 def _generate_twisted_synopsis_data(story, accumulated, phase):
-    all_cliches = Cliche.objects.exclude(id=story.main_cliche.id).all()
+    # [수정] 같은 장르 내 다른 클리셰만 선택 (exclude main_cliche)
+    all_cliches = Cliche.objects.filter(genre=story.main_cliche.genre).exclude(id=story.main_cliche.id).all()
+    if not all_cliches.exists():
+        # 혹시 같은 장르에 다른 클리셰가 없으면 전체에서 찾음 (예외 처리)
+        all_cliches = Cliche.objects.exclude(id=story.main_cliche.id).all()
+    
     if not all_cliches: return None, ""
+    
     cliche_info = "\n".join([f"ID {c.id}: {c.title}" for c in all_cliches])
     
     rec_res = call_llm(
-        "반전의 대가입니다. 현재까지의 이야기를 비틀어 다른 장르로 전환하려 합니다. 가장 적합한 클리셰 ID를 추천하세요.", 
+        f"반전의 대가입니다. 현재까지의 이야기를 비틀어 **같은 장르({story.main_cliche.genre.name}) 내의 다른 클리셰**로 전환하려 합니다. 가장 적합한 클리셰 ID를 추천하세요.", 
         f"현재까지 줄거리: {accumulated[-2000:]}\n후보 목록: {cliche_info}\n출력: {{'cliche_id': 숫자}}", 
         json_format=True
     )
@@ -368,7 +380,7 @@ def _generate_twisted_synopsis_data(story, accumulated, phase):
     except: new_cliche = all_cliches.first()
     
     twisted_synopsis = call_llm(
-        "소설가입니다. 기존 스토리의 흐름을 유지하다가 급격하게 새로운 클리셰로 전환되는 시놉시스를 작성하세요.",
+        "소설가입니다. 기존 스토리의 흐름을 유지하다가 급격하게 새로운 클리셰(같은 장르)로 전환되는 시놉시스를 작성하세요. **한자를 사용하지 마세요.**",
         f"지금까지 내용: {accumulated}\n새로운 클리셰: {new_cliche.title} ({new_cliche.summary})\n"
         "조건: 문체는 '~한다'로 통일. 구체적인 줄거리 작성."
     )
@@ -377,8 +389,8 @@ def _generate_twisted_synopsis_data(story, accumulated, phase):
 # [핵심 수정 함수]: 기존 선택지는 건드리지 않고, Twist 선택지만 2개 추가
 def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name):
     sys_prompt = (
-        f"장르가 급격히 바뀌는 반전 분기점입니다. 주인공 '{protagonist_name}'의 입장에서, "
-        "완전히 새로운 스토리 흐름(Twist)으로 이어지는 파격적인 행동 선택지 2개를 생성하세요. "
+        f"장르적 반전(Twist)이 일어나는 분기점입니다. 주인공 '{protagonist_name}'의 입장에서, "
+        "완전히 새로운 전개로 이어지는 파격적인 행동 선택지 2개를 생성하세요. "
         "기존 흐름의 선택지는 이미 존재하므로 생성하지 마세요."
     )
     
