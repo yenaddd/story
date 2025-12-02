@@ -21,10 +21,11 @@ BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
-def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_retries=3):
+def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3):
     """
     LLM 호출 함수
-    - stream=True일 경우, 응답을 스트리밍으로 받아 합쳐서 반환합니다. (긴 텍스트 생성 시 타임아웃 방지)
+    - max_tokens: 기본값 4000 (일반적인 호출용). 시놉시스 생성 시에만 더 높은 값으로 설정 가능.
+    - stream: 기본값 False. True일 경우 응답을 조각(chunk)으로 받아 합칩니다.
     """
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
@@ -40,21 +41,21 @@ def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_re
                 messages=messages, 
                 response_format=response_format, 
                 temperature=0.7, 
-                max_tokens=8000, # 긴 시놉시스를 위해 토큰 제한 늘림
-                timeout=120,    # 타임아웃 여유 있게 설정
+                max_tokens=max_tokens, # 파라미터로 받은 값 적용 (기본 4000)
+                timeout=120,    
                 stream=stream 
             )
             
             content = ""
             if stream:
-                # 스트리밍 모드: 청크를 모아서 완성
-                print("  [LLM] Streaming generating...", end="", flush=True)
+                # 스트리밍 모드: 청크를 모아서 완성 (시놉시스용)
+                print(f"  [LLM] Streaming generating (Max Tokens: {max_tokens})...", end="", flush=True)
                 for chunk in response:
                     if chunk.choices[0].delta.content:
                         content += chunk.choices[0].delta.content
                 print(" Done.")
             else:
-                # 일반 모드
+                # 일반 모드: 통으로 받기 (안정성 위주)
                 content = response.choices[0].message.content
 
             if json_format:
@@ -80,7 +81,7 @@ def create_story_pipeline(user_world_setting):
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
 
-    # 1. 설정 구체화 및 주인공 정의
+    # 1. 설정 구체화 및 주인공 정의 (기본 토큰 4000 사용)
     refined_setting, protagonist_name = _refine_setting_and_protagonist(user_world_setting)
     print(f"✅ Refined Setting: {refined_setting[:50]}... / Protagonist: {protagonist_name}")
 
@@ -89,7 +90,7 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭
+    # 2. 클리셰 매칭 (기본 토큰 4000 사용)
     matched_cliche = _match_cliche(refined_setting)
     if not matched_cliche:
         raise ValueError("적절한 클리셰를 찾지 못했습니다.")
@@ -97,7 +98,7 @@ def create_story_pipeline(user_world_setting):
     
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
-    # 3. 시놉시스 생성 (스트리밍 적용, 대규모 텍스트)
+    # 3. 시놉시스 생성 (여기만 8000토큰 + 스트리밍 사용!)
     print("  [Step 3] Generating Massive Synopsis (Streaming)...")
     synopsis = _generate_synopsis(story, matched_cliche, protagonist_name)
     story.synopsis = synopsis
@@ -132,7 +133,6 @@ def create_story_pipeline(user_world_setting):
     # 8. 비틀기(Twist) 지점 찾기
     twist_node_index = _find_twist_point_index(original_nodes)
     
-    # 인덱스 안전장치
     if twist_node_index >= len(original_nodes) - 1: 
         twist_node_index = len(original_nodes) - 2
     if twist_node_index < 0: twist_node_index = 0
@@ -143,8 +143,7 @@ def create_story_pipeline(user_world_setting):
 
     accumulated_content = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
-    # 9. 비틀린 시놉시스 생성 (여기도 스트리밍 적용 가능하나, 일단 기존 유지하거나 필요시 변경)
-    # 현재 요구사항은 "시놉시스 작성할 때만" 이므로 초기 시놉시스에 집중.
+    # 9. 비틀린 시놉시스 생성 (기본 4000토큰 사용 - 부분 생성이므로 충분함)
     twisted_synopsis = _generate_twisted_synopsis_data(story, accumulated_content, twist_node.chapter_phase)
     
     story.twisted_synopsis = twisted_synopsis
@@ -176,6 +175,7 @@ def create_story_pipeline(user_world_setting):
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
+    # max_tokens 기본값(4000) 사용
     sys_prompt = (
         "당신은 창의적인 스토리 작가입니다. 사용자의 입력을 분석하여 세계관을 확정하고 주인공을 정의하세요. "
         "**[필수] 사용자가 주인공의 이름을 지정하지 않았다면, 세계관과 분위기에 어울리는 멋진 이름을 반드시 창작하세요.** "
@@ -190,7 +190,7 @@ def _refine_setting_and_protagonist(raw_setting):
         "  'protagonist_desc': '주인공의 성격, 외모, 특징'\n"
         "}"
     )
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    res = call_llm(sys_prompt, user_prompt, json_format=True) # stream=False, max_tokens=4000
     setting = res.get('refined_setting', raw_setting)
     name = res.get('protagonist_name', '') 
     
@@ -202,6 +202,7 @@ def _refine_setting_and_protagonist(raw_setting):
     return setting, name
 
 def _match_cliche(setting):
+    # max_tokens 기본값(4000) 사용
     all_cliches = Cliche.objects.select_related('genre').all()
     if not all_cliches.exists(): return None
     
@@ -218,7 +219,7 @@ def _match_cliche(setting):
     res = call_llm(
         sys_prompt, 
         f"사용자 설정: {setting}\n\n후보 클리셰 목록:\n{cliche_info}\n\n출력형식: {{'cliche_id': 숫자}}", 
-        json_format=True
+        json_format=True # stream=False, max_tokens=4000
     )
     
     try: 
@@ -229,7 +230,7 @@ def _match_cliche(setting):
         return random.choice(all_cliches)
 
 def _generate_synopsis(story, cliche, protagonist_name):
-    # [Req Update] 2000자 이상, 스트리밍 호출, 인물 변화 상세 포함
+    # [설정] 여기만 특별하게! stream=True, max_tokens=8000 설정
     sys_prompt = (
         "당신은 대서사시를 집필하는 메인 시나리오 작가입니다. "
         "사용자의 설정과 클리셰를 결합하여, **공백 포함 최소 2000자 이상의 매우 상세하고 긴 시놉시스**를 작성해야 합니다.\n\n"
@@ -251,8 +252,8 @@ def _generate_synopsis(story, cliche, protagonist_name):
         "위 정보를 바탕으로 대규모 시놉시스를 작성하세요."
     )
     
-    # [Streaming ON] 긴 생성을 위해 스트리밍 모드 사용
-    return call_llm(sys_prompt, user_prompt, stream=True)
+    # 스트리밍 및 대용량 토큰 허용
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
 
 def _analyze_and_save_character_state(story, text, context):
     sys_prompt = (
@@ -261,7 +262,7 @@ def _analyze_and_save_character_state(story, text, context):
     )
     user_prompt = f"텍스트: {text}\n출력 형식: {{'캐릭터이름': {{'emotion': '...', 'trust': '...', 'ideology': '...', 'relationship_change': '...'}}}}"
     
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    res = call_llm(sys_prompt, user_prompt, json_format=True) # stream=False, max_tokens=4000
     for name, state in res.items():
         CharacterState.objects.create(
             story=story, 
@@ -278,6 +279,7 @@ def _get_latest_character_states(story):
     return json.dumps(latest_states, ensure_ascii=False)
 
 def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_index=0, is_twist_branch=False, universe_id=None):
+    # max_tokens 기본값(4000) 사용
     phases = ["발단", "전개", "절정", "결말"]
     nodes = []
     char_states_str = _get_latest_character_states(story)
@@ -305,7 +307,7 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         "형식: {'scenes': [...]}"
     )
     
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    res = call_llm(sys_prompt, user_prompt, json_format=True) # stream=False, max_tokens=4000
     
     scenes = res.get('scenes', [])
     
@@ -345,6 +347,7 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     return nodes
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
+    # max_tokens 기본값(4000) 사용
     sys_prompt = (
         f"현재 장면에서 다음 장면으로 넘어가기 위한 선택지 2개를 생성하세요. 주인공 '{protagonist_name}'의 입장이 되어야 합니다.\n"
         "**[필수 조건]**\n"
@@ -370,7 +373,7 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
             "]}"
         )
         
-        res = call_llm(sys_prompt, user_prompt, json_format=True)
+        res = call_llm(sys_prompt, user_prompt, json_format=True) # stream=False, max_tokens=4000
 
         for item in res.get('choices', []):
             choice_text = item.get('text', "다음으로")
@@ -391,13 +394,14 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
                 except: pass
 
 def _find_twist_point_index(nodes):
+    # max_tokens 기본값(4000) 사용
     if len(nodes) < 4: return 1
     summaries = [f"Idx {i}: {n.content[:100]}..." for i, n in enumerate(nodes[:-2])] 
     
     res = call_llm(
         "제공된 스토리 흐름을 보고, 클리셰를 비틀어 예상치 못한 방향(Twist)으로 이야기를 전개하기 가장 좋은 지점(Index)을 하나 고르세요.", 
         "\n".join(summaries) + "\n출력형식: {'index': 숫자}", 
-        json_format=True
+        json_format=True # stream=False, max_tokens=4000
     )
     idx = res.get('index', 2)
     if idx < 1: idx = 1
@@ -406,6 +410,7 @@ def _find_twist_point_index(nodes):
     return idx
 
 def _generate_twisted_synopsis_data(story, accumulated_content, current_phase):
+    # 비틀린 시놉시스는 부분 작성이므로 기본 토큰 4000으로 충분, stream=False
     sys_prompt = (
         "당신은 반전 스토리의 대가입니다. 지금까지 진행된 스토리의 클리셰를 유지하되, "
         "**이야기의 흐름을 비틀어(Twist) 전혀 다른 양상으로 전개되는 새로운 시놉시스**를 작성하세요. "
@@ -419,10 +424,11 @@ def _generate_twisted_synopsis_data(story, accumulated_content, current_phase):
         "지시사항: 위 줄거리 이후부터 이어질 새로운 '전개-절정-결말' 시놉시스를 작성하세요. 인물들의 내면 변화를 반드시 반영해야 합니다."
     )
     
-    twisted_synopsis = call_llm(sys_prompt, user_prompt)
+    twisted_synopsis = call_llm(sys_prompt, user_prompt) # stream=False, max_tokens=4000
     return twisted_synopsis
 
 def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name):
+    # max_tokens 기본값(4000) 사용
     sys_prompt = (
         f"이야기가 극적으로 갈라지는 분기점입니다. 주인공 '{protagonist_name}'의 선택에 따라 이야기가 완전히 바뀝니다. "
         f"이 선택지들은 **기존의 선택지들과 정확히 '동일한 상황'에서 시작되어야 합니다.** "
@@ -445,7 +451,7 @@ def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name
         "}"
     )
     
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    res = call_llm(sys_prompt, user_prompt, json_format=True) # stream=False, max_tokens=4000
     
     curr_uid = f"{universe_id}_{node.id}"
     new_next_uid = f"{universe_id}_{new_next.id}"
