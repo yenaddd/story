@@ -9,6 +9,7 @@ from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 
 from .neo4j_connection import (
     create_universe_node_neo4j, 
+    update_universe_node_neo4j,
     sync_node_to_neo4j, 
     link_universe_to_first_scene, 
     sync_choice_to_neo4j, 
@@ -100,6 +101,11 @@ def create_story_pipeline(user_world_setting):
     story.synopsis = synopsis
     story.save()
 
+    try:
+        update_universe_node_neo4j(universe_id, protagonist_name, protagonist_desc, synopsis)
+    except Exception as e:
+        print(f"Neo4j Update Error: {e}")
+        
     # 4. 인물 내면 상태 분석
     _analyze_and_save_character_state(story, synopsis, context="Initial Synopsis")
 

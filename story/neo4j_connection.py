@@ -114,3 +114,19 @@ def sync_choice_to_neo4j(curr_id: str, next_id: str, choice_text, result_text, i
         "choice_text": choice_text, 
         "result_text": result_text
     })
+
+def update_universe_node_neo4j(universe_id: str, protagonist_name: str, protagonist_desc: str, synopsis: str):
+    query = """
+    MATCH (u:Universe {universe_id: $universe_id})
+    SET 
+        u.protagonist_name = $protagonist_name,
+        u.protagonist_desc = $protagonist_desc,
+        u.synopsis = $synopsis
+    """
+    run_cypher(query, {
+        "universe_id": universe_id, 
+        "protagonist_name": protagonist_name,
+        "protagonist_desc": protagonist_desc,
+        "synopsis": synopsis
+    })
+    print(f"  [Neo4j] Universe Node Updated with Synopsis & Character Info")
