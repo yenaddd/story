@@ -10,6 +10,7 @@ from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 from .neo4j_connection import (
     create_universe_node_neo4j, 
     update_universe_node_neo4j,
+    update_universe_twist_neo4j, # [추가] 변주 시놉시스 저장 함수
     sync_node_to_neo4j, 
     link_universe_to_first_scene, 
     sync_choice_to_neo4j, 
@@ -78,7 +79,7 @@ def create_story_pipeline(user_world_setting):
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
 
-    # 1. 설정 구체화 및 주인공 정의 (주인공 특징 'desc' 추가 반환)
+    # 1. 설정 구체화 및 주인공 정의
     refined_setting, protagonist_name, protagonist_desc = _refine_setting_and_protagonist(user_world_setting)
     print(f"✅ Refined Setting: {refined_setting[:50]}... / Protagonist: {protagonist_name}")
 
@@ -95,7 +96,7 @@ def create_story_pipeline(user_world_setting):
     
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
-    # 3. 시놉시스 생성 (주인공 특징 'protagonist_desc' 전달)
+    # 3. 시놉시스 생성
     print("  [Step 3] Generating Massive Synopsis (Streaming)...")
     synopsis = _generate_synopsis(story, matched_cliche, protagonist_name, protagonist_desc)
     story.synopsis = synopsis
@@ -106,7 +107,7 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Update Error: {e}")
         
-    # 4. 인물 내면 상태 분석
+    # 4. 인물 내면 상태 분석 (초기 시놉시스는 필요)
     _analyze_and_save_character_state(story, synopsis, context="Initial Synopsis")
 
     # 5 & 6. 초기 노드 생성
@@ -145,14 +146,25 @@ def create_story_pipeline(user_world_setting):
 
     accumulated_content = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
-    # 9. 비틀린 시놉시스 생성
-    twisted_synopsis = _generate_twisted_synopsis_data(story, accumulated_content, twist_node.chapter_phase)
+    # 9. 비틀린 시놉시스 생성 (프롬프트 강화 & 스트리밍 적용)
+    # [수정] 주인공 정보 및 상세 가이드 전달
+    print("  [Step 9] Generating Twisted Synopsis (Streaming)...")
+    twisted_synopsis = _generate_twisted_synopsis_data(
+        story, accumulated_content, twist_node.chapter_phase, protagonist_name, protagonist_desc
+    )
     
     story.twisted_synopsis = twisted_synopsis
     story.save()
+
+    # [수정] Neo4j에 변주 시놉시스 저장 (별도 필드)
+    try:
+        update_universe_twist_neo4j(universe_id, twisted_synopsis)
+    except Exception as e:
+        print(f"Neo4j Twist Update Error: {e}")
     
-    # 10. 비틀린 시놉시스 기반 내면 분석
-    _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
+    # 10. 비틀린 시놉시스 기반 내면 분석 -> [삭제됨]
+    # 요청하신 대로 생성 단계에서 이미 포함되므로 별도 분석 과정은 생략합니다.
+    # _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
 
     # 11. 비틀기 노드 생성
     new_branch_nodes = _create_nodes_from_synopsis(
@@ -177,12 +189,11 @@ def create_story_pipeline(user_world_setting):
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
-    # [수정] 상세한 세계관 설정 가이드 적용
     sys_prompt = (
         "당신은 창의적인 스토리 작가입니다. 사용자의 입력을 분석하여 세계관을 확정하고 주인공을 정의하세요. "
         "**[필수 규칙]**\n"
         "1. 사용자가 주인공의 이름을 지정하지 않았다면, 세계관에 어울리는 멋진 이름을 반드시 창작하세요.\n"
-        "2. **모든 인물의 이름은 반드시 '한글'로 표기해야 합니다.** (예: Arthur -> 아서, Jane -> 제인)\n"
+        "2. **모든 인물의 이름은 반드시 '한글'로 표기해야 합니다.**\n"
         "3. 절대 '주인공', '나', '행인1' 같은 대명사나 성의 없는 이름을 사용하지 마세요."
     )
     user_prompt = (
@@ -198,10 +209,9 @@ def _refine_setting_and_protagonist(raw_setting):
     
     setting = res.get('refined_setting', raw_setting)
     name = res.get('protagonist_name', '') 
-    desc = res.get('protagonist_desc', '') # 주인공 특징 추가 확보
+    desc = res.get('protagonist_desc', '')
     
     if not name or name.strip() in ["주인공", "나", "Unknown", "미정"]:
-        # [수정] 주인공 이름 생성 프롬프트 업데이트
         name_res = call_llm("이 세계관 내용 중 중요 세계관 설정 내용과 어울리는 주인공 이름을 1개만 한글로 지어줘.", f"세계관: {setting}")
         name = name_res.strip().replace("이름:", "").replace(".", "")
         if not name: name = "이안"
@@ -236,7 +246,6 @@ def _match_cliche(setting):
         return random.choice(all_cliches)
 
 def _generate_synopsis(story, cliche, protagonist_name, protagonist_desc):
-    # [수정] protagonist_desc 추가 반영
     sys_prompt = (
         "당신은 대서사시를 집필하는 메인 시나리오 작가입니다. "
         "사용자의 설정과 클리셰를 결합하여, **공백 포함 최소 2000자 이상의 매우 상세하고 긴 시놉시스**를 작성해야 합니다.\n\n"
@@ -252,7 +261,7 @@ def _generate_synopsis(story, cliche, protagonist_name, protagonist_desc):
     user_prompt = (
         f"세계관: {story.user_world_setting}\n"
         f"주인공: {protagonist_name}\n"
-        f"주인공 특징: {protagonist_desc}\n" # [추가] 상세 특징 전달
+        f"주인공 특징: {protagonist_desc}\n"
         f"적용 클리셰: {cliche.title} ({cliche.summary})\n"
         f"클리셰 가이드: {cliche.structure_guide}\n"
         f"참고 작품 감정선: {cliche.example_work_summary}\n\n"
@@ -413,23 +422,31 @@ def _find_twist_point_index(nodes):
     
     return idx
 
-def _generate_twisted_synopsis_data(story, accumulated_content, current_phase):
+def _generate_twisted_synopsis_data(story, accumulated_content, current_phase, protagonist_name, protagonist_desc):
+    # [수정] 변주 시놉시스 생성 프롬프트 강화 (초기 시놉시스와 동일한 구조, 2000자 이상)
     sys_prompt = (
         "당신은 반전 스토리의 대가입니다. 지금까지 진행된 스토리의 클리셰를 유지하되, "
-        "**이야기의 흐름을 비틀어(Twist) 전혀 다른 양상으로 전개되는 새로운 시놉시스**를 작성하세요. "
-        "새로운 클리셰를 도입하지 말고, 현재 클리셰 안에서 사건의 해석을 달리하거나 돌발 변수를 추가하여 결말을 바꾸세요.\n"
-        "**주의: 생성된 시놉시스의 결말은 반드시 명확하게 매듭지어져야 합니다.**"
+        "**이야기의 흐름을 비틀어(Twist) 전혀 다른 양상으로 전개되는 '새로운 대규모 시놉시스'**를 작성하세요.\n"
+        "새로운 클리셰를 도입하지 말고, 현재 클리셰 안에서 사건의 해석을 달리하거나 돌발 변수를 추가하여 결말을 바꾸세요.\n\n"
+        "**[필수 작성 가이드]**\n"
+        "1. **분량**: 공백 포함 **최소 2000자 이상**으로 작성하세요.\n"
+        "2. **구성 요소** (반드시 포함):\n"
+        f"   - **[1. 주인공 상태 재점검]**: 현재까지의 사건을 겪은 '{protagonist_name}'의 변화된 심리와 상황.\n"
+        "   - **[2. 변주된 전체 줄거리]**: 변주 지점 이후부터의 전개-절정-결말.\n"
+        "   - **[3. 인물 내면 변화 보고서]**: 변주된 스토리라인에서 인물들이 겪을 새로운 감정, 신뢰, 사상의 변화 과정.\n"
+        "3. **결말**: 이야기는 반드시 명확하게 종결되어야 합니다. (열린 결말 금지)"
     )
     
     user_prompt = (
         f"현재 적용된 클리셰: {story.main_cliche.title} ({story.main_cliche.summary})\n"
-        f"현재까지 진행된 줄거리: {accumulated_content[-1000:]}\n"
-        f"현재 단계: {current_phase} 이후\n\n"
-        "지시사항: 위 줄거리 이후부터 이어질 새로운 '전개-절정-결말' 시놉시스를 작성하세요. 인물들의 내면 변화를 반드시 반영해야 합니다."
+        f"주인공 특징: {protagonist_desc}\n"
+        f"현재까지 진행된 줄거리: {accumulated_content[-1500:]}\n"
+        f"현재 단계: {current_phase} 이후부터 변주 시작\n\n"
+        "지시사항: 위 줄거리 이후부터 이어질 새로운 '전개-절정-결말' 시놉시스를 작성하세요."
     )
     
-    twisted_synopsis = call_llm(sys_prompt, user_prompt) 
-    return twisted_synopsis
+    # [설정] 여기도 스트리밍 및 대용량 토큰 적용
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
 
 def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name):
     sys_prompt = (

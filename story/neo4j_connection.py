@@ -30,7 +30,7 @@ def run_cypher(query: str, params: dict = None):
         print(f"Cypher 쿼리 실행 중 오류 발생: {e}")
 
 # -----------------------------------------------------------
-# [1] 세계관(Universe) 노드 생성
+# [1] 세계관(Universe) 노드 생성 & 업데이트
 # -----------------------------------------------------------
 def create_universe_node_neo4j(universe_id: str, world_setting: str):
     query = """
@@ -44,12 +44,42 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str):
     run_cypher(query, {"universe_id": universe_id, "world_setting": world_setting})
     print(f"  [Neo4j] Universe Node Created: {universe_id}")
 
+def update_universe_node_neo4j(universe_id: str, protagonist_name: str, protagonist_desc: str, synopsis: str):
+    """초기 시놉시스 및 주인공 정보 업데이트"""
+    query = """
+    MATCH (u:Universe {universe_id: $universe_id})
+    SET 
+        u.protagonist_name = $protagonist_name,
+        u.protagonist_desc = $protagonist_desc,
+        u.synopsis = $synopsis
+    """
+    run_cypher(query, {
+        "universe_id": universe_id, 
+        "protagonist_name": protagonist_name,
+        "protagonist_desc": protagonist_desc,
+        "synopsis": synopsis
+    })
+    print(f"  [Neo4j] Universe Node Updated with Initial Synopsis")
+
+def update_universe_twist_neo4j(universe_id: str, twisted_synopsis: str):
+    """[New] 변주 시놉시스 별도 필드 저장"""
+    query = """
+    MATCH (u:Universe {universe_id: $universe_id})
+    SET 
+        u.twisted_synopsis = $twisted_synopsis
+    """
+    run_cypher(query, {
+        "universe_id": universe_id, 
+        "twisted_synopsis": twisted_synopsis
+    })
+    print(f"  [Neo4j] Universe Node Updated with Twisted Synopsis")
+
 # -----------------------------------------------------------
 # [2] 스토리(Scene) 노드 생성
 # -----------------------------------------------------------
 @dataclass
 class StoryNodeData:
-    node_id: str          # [수정] Django ID(int)가 아닌 UniverseID_NodeID(str) 형태를 받음
+    node_id: str          
     phase: str            
     title: str
     setting: str
@@ -82,13 +112,10 @@ def sync_node_to_neo4j(data: StoryNodeData):
     run_cypher(query, {"props": props})
 
 # -----------------------------------------------------------
-# [3] 연결 관계 생성 (Universe -> Start, Scene -> Scene)
+# [3] 연결 관계 생성
 # -----------------------------------------------------------
 
-def link_universe_to_first_scene(universe_id: str, first_node_id: str): # [수정] int -> str
-    """
-    세계관(Universe)과 이야기의 시작점(첫 Scene)을 연결합니다.
-    """
+def link_universe_to_first_scene(universe_id: str, first_node_id: str):
     query = """
     MATCH (u:Universe {universe_id: $universe_id})
     MATCH (n:Scene {node_id: $node_id})
@@ -97,10 +124,7 @@ def link_universe_to_first_scene(universe_id: str, first_node_id: str): # [수�
     run_cypher(query, {"universe_id": universe_id, "node_id": first_node_id})
     print(f"  [Neo4j] Linked Universe -> First Scene ({first_node_id})")
 
-def sync_choice_to_neo4j(curr_id: str, next_id: str, choice_text, result_text, is_twist=False): # [수정] int -> str
-    """
-    선택지에 따른 Scene 간 연결 관계를 생성합니다.
-    """
+def sync_choice_to_neo4j(curr_id: str, next_id: str, choice_text, result_text, is_twist=False):
     rel_type = "TWIST_CHOICE" if is_twist else "CHOICE"
     query = f"""
     MATCH (curr:Scene {{node_id: $curr_id}})
@@ -114,19 +138,3 @@ def sync_choice_to_neo4j(curr_id: str, next_id: str, choice_text, result_text, i
         "choice_text": choice_text, 
         "result_text": result_text
     })
-
-def update_universe_node_neo4j(universe_id: str, protagonist_name: str, protagonist_desc: str, synopsis: str):
-    query = """
-    MATCH (u:Universe {universe_id: $universe_id})
-    SET 
-        u.protagonist_name = $protagonist_name,
-        u.protagonist_desc = $protagonist_desc,
-        u.synopsis = $synopsis
-    """
-    run_cypher(query, {
-        "universe_id": universe_id, 
-        "protagonist_name": protagonist_name,
-        "protagonist_desc": protagonist_desc,
-        "synopsis": synopsis
-    })
-    print(f"  [Neo4j] Universe Node Updated with Synopsis & Character Info")
