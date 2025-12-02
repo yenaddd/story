@@ -23,7 +23,7 @@ BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
-def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3):
+def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=120):
     """
     LLM 호출 함수
     """
@@ -42,7 +42,7 @@ def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_to
                 response_format=response_format, 
                 temperature=0.7, 
                 max_tokens=max_tokens, 
-                timeout=120,    
+                timeout=timeout,   
                 stream=stream 
             )
             
@@ -102,7 +102,7 @@ def create_story_pipeline(user_world_setting):
     story.synopsis = synopsis
     story.save()
 
-    # [추가] 3.5 세계관 상세 정보 및 메타데이터 생성 (Title, Description, PlayTime)
+    # 3.5 세계관 상세 정보 및 메타데이터 생성 (Title, Description, PlayTime)
     print("  [Step 3.5] Generating Universe Details...")
     universe_details = _generate_universe_details(refined_setting, synopsis)
 
@@ -115,7 +115,7 @@ def create_story_pipeline(user_world_setting):
             universe_details.get("title", "무제"),
             universe_details.get("description", ""),
             universe_details.get("detail_description", ""),
-            universe_details.get("play_time", "10분")
+            universe_details.get("play_time", "20분")
         )
     except Exception as e:
         print(f"Neo4j Update Error: {e}")
@@ -160,7 +160,7 @@ def create_story_pipeline(user_world_setting):
     accumulated_content = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
     # 9. 비틀린 시놉시스 생성 (프롬프트 강화 & 스트리밍 적용)
-    # [수정] 주인공 정보 및 상세 가이드 전달
+    # 주인공 정보 및 상세 가이드 전달
     print("  [Step 9] Generating Twisted Synopsis (Streaming)...")
     twisted_synopsis = _generate_twisted_synopsis_data(
         story, accumulated_content, twist_node.chapter_phase, protagonist_name, protagonist_desc
@@ -169,7 +169,7 @@ def create_story_pipeline(user_world_setting):
     story.twisted_synopsis = twisted_synopsis
     story.save()
 
-    # [수정] Neo4j에 변주 시놉시스 저장 (별도 필드)
+    # Neo4j에 변주 시놉시스 저장 (별도 필드)
     try:
         update_universe_twist_neo4j(universe_id, twisted_synopsis)
     except Exception as e:
@@ -322,7 +322,7 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         "후속작을 암시하거나, '우리의 모험은 계속된다' 식의 열린 결말로 끝내지 마세요. 모든 갈등이 해소되고 상황이 종료된 명확한 엔딩을 쓰세요."
     )
     
-    # [수정 1] 총 노드 수 변경 (8개 -> 12개)
+    # 총 노드 수 변경 (8개 -> 12개)
     # 각 단계별 3개씩 * 4단계 = 12개
     needed_nodes = 12 - start_node_index
     
@@ -335,18 +335,20 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         "형식: {'scenes': [...]}"
     )
     
-    # [수정 2] max_tokens 증가 (4000 -> 8000)
+    # max_tokens 증가 (4000 -> 8000)
     # 노드 개수가 늘어나면 응답 길이가 길어지므로 토큰 제한을 늘려줍니다.
-    res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=8000) 
-    
+    res = call_llm(
+            sys_prompt, 
+            user_prompt, 
+            json_format=True, 
+            max_tokens=8000, # 긴 텍스트 생성을 위해 토큰 증가
+            timeout=600      # 10분 대기 (스트리밍 없으므로 넉넉하게)
+        )    
     scenes = res.get('scenes', [])
     
     for i, scene_data in enumerate(scenes):
         current_idx = start_node_index + i
         
-        # [수정 3] 단계(Phase) 할당 로직 변경 (// 2 -> // 3)
-        # 0,1,2 -> index 0 (발단)
-        # 3,4,5 -> index 1 (전개) ...
         phase_idx = min(current_idx // 3, 3)
         phase_name = phases[phase_idx]
         
