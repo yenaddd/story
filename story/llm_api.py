@@ -77,8 +77,8 @@ def create_story_pipeline(user_world_setting):
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
 
-    # 1. 설정 구체화 및 주인공 정의
-    refined_setting, protagonist_name = _refine_setting_and_protagonist(user_world_setting)
+    # 1. 설정 구체화 및 주인공 정의 (주인공 특징 'desc' 추가 반환)
+    refined_setting, protagonist_name, protagonist_desc = _refine_setting_and_protagonist(user_world_setting)
     print(f"✅ Refined Setting: {refined_setting[:50]}... / Protagonist: {protagonist_name}")
 
     try:
@@ -94,9 +94,9 @@ def create_story_pipeline(user_world_setting):
     
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
-    # 3. 시놉시스 생성
+    # 3. 시놉시스 생성 (주인공 특징 'protagonist_desc' 전달)
     print("  [Step 3] Generating Massive Synopsis (Streaming)...")
-    synopsis = _generate_synopsis(story, matched_cliche, protagonist_name)
+    synopsis = _generate_synopsis(story, matched_cliche, protagonist_name, protagonist_desc)
     story.synopsis = synopsis
     story.save()
 
@@ -171,7 +171,7 @@ def create_story_pipeline(user_world_setting):
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
-    # [수정 1] 한글 이름 강제
+    # [수정] 상세한 세계관 설정 가이드 적용
     sys_prompt = (
         "당신은 창의적인 스토리 작가입니다. 사용자의 입력을 분석하여 세계관을 확정하고 주인공을 정의하세요. "
         "**[필수 규칙]**\n"
@@ -183,21 +183,24 @@ def _refine_setting_and_protagonist(raw_setting):
         f"사용자 입력: {raw_setting}\n\n"
         "다음 형식의 JSON으로 출력하세요:\n"
         "{\n"
-        "  'refined_setting': '확정된 구체적인 세계관 및 배경 설정. 사용자 입력 내용과 가장 관련이 깊은 설정을 중요 세계관설정으로 두고, 나머지는 그냥 세계관 설정. 다음 내용이 서로 모순을 일으키지 않고 조화롭게 하나의 세계관, 배경을 이루도록 창작할 것. 신념: 어떤 사상이나 진리를 진실로 받아들이는 심리적 태도입니다. ,가치와 윤리: 옳고 그름, 좋음과 나쁨을 판단하는 기준이며, 도덕적, 윤리적 규범을 포함합니다., 인간 본질: 인간이 무엇이며, 어떻게 존재해야 하는지에 대한 생각입니다., 우주와 기원: 세계가 어떻게 시작되었고, 어떻게 작동하는지에 대한 근본적인 질문에 대한 답입니다.,사회 구조: 가족, 공동체, 정치 시스템 등 사회를 구성하는 방식에 대한 생각입니다. ,지정학: 국가, 영토, 국경, 지리적 특징 등.,경제: 재화, 돈, 무역 등 경제 시스템.,역사: 과거 사건들이 현재에 미치는 영향., 종교: 신앙 체계와 문화. ,생태계: 자연 환경, 자원, 생물권 등 (텍스트)',\n"
+        "  'refined_setting': '확정된 구체적인 세계관 및 배경 설정. 사용자 입력 내용과 가장 관련이 깊은 설정을 중요 세계관설정으로 두고, 나머지는 그냥 세계관 설정. 다음 내용이 서로 모순을 일으키지 않고 조화롭게 하나의 세계관, 배경을 이루도록 창작할 것. [신념]: 어떤 사상이나 진리를 진실로 받아들이는 심리적 태도입니다. [가치와 윤리]: 옳고 그름, 좋음과 나쁨을 판단하는 기준이며, 도덕적, 윤리적 규범을 포함합니다. [인간 본질]: 인간이 무엇이며, 어떻게 존재해야 하는지에 대한 생각입니다. [우주와 기원]: 세계가 어떻게 시작되었고, 어떻게 작동하는지에 대한 근본적인 질문에 대한 답입니다. [사회 구조]: 가족, 공동체, 정치 시스템 등 사회를 구성하는 방식에 대한 생각입니다. [지정학]: 국가, 영토, 국경, 지리적 특징 등. [경제]: 재화, 돈, 무역 등 경제 시스템. [역사]: 과거 사건들이 현재에 미치는 영향. [종교]: 신앙 체계와 문화. [생태계]: 자연 환경, 자원, 생물권 등 (텍스트)',\n"
         "  'protagonist_name': '확정되거나 창작된 주인공 이름 (한글 표기 필수)',\n"
         "  'protagonist_desc': '주인공의 성격, 외모, 믿음, 성향, 사상'\n"
         "}"
     )
     res = call_llm(sys_prompt, user_prompt, json_format=True) 
+    
     setting = res.get('refined_setting', raw_setting)
     name = res.get('protagonist_name', '') 
+    desc = res.get('protagonist_desc', '') # 주인공 특징 추가 확보
     
     if not name or name.strip() in ["주인공", "나", "Unknown", "미정"]:
+        # [수정] 주인공 이름 생성 프롬프트 업데이트
         name_res = call_llm("이 세계관 내용 중 중요 세계관 설정 내용과 어울리는 주인공 이름을 1개만 한글로 지어줘.", f"세계관: {setting}")
         name = name_res.strip().replace("이름:", "").replace(".", "")
         if not name: name = "이안"
         
-    return setting, name
+    return setting, name, desc
 
 def _match_cliche(setting):
     all_cliches = Cliche.objects.select_related('genre').all()
@@ -226,8 +229,8 @@ def _match_cliche(setting):
         print("⚠️ [Warning] 클리셰 매칭 실패. 랜덤으로 선택합니다.")
         return random.choice(all_cliches)
 
-def _generate_synopsis(story, cliche, protagonist_name):
-    # 한글 이름 강제 포함
+def _generate_synopsis(story, cliche, protagonist_name, protagonist_desc):
+    # [수정] protagonist_desc 추가 반영
     sys_prompt = (
         "당신은 대서사시를 집필하는 메인 시나리오 작가입니다. "
         "사용자의 설정과 클리셰를 결합하여, **공백 포함 최소 2000자 이상의 매우 상세하고 긴 시놉시스**를 작성해야 합니다.\n\n"
@@ -243,6 +246,7 @@ def _generate_synopsis(story, cliche, protagonist_name):
     user_prompt = (
         f"세계관: {story.user_world_setting}\n"
         f"주인공: {protagonist_name}\n"
+        f"주인공 특징: {protagonist_desc}\n" # [추가] 상세 특징 전달
         f"적용 클리셰: {cliche.title} ({cliche.summary})\n"
         f"클리셰 가이드: {cliche.structure_guide}\n"
         f"참고 작품 감정선: {cliche.example_work_summary}\n\n"
@@ -279,7 +283,6 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     nodes = []
     char_states_str = _get_latest_character_states(story)
 
-    # [수정 3] 결말 완결성 강제 (모든 경로 적용)
     sys_prompt = (
         f"당신은 인터랙티브 스토리 게임의 작가입니다. 시놉시스를 바탕으로 플레이어가 진행할 구체적인 장면(Node)들을 생성하세요. "
         f"주인공은 '{protagonist_name}'입니다.\n"
@@ -325,14 +328,14 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
                 raw_chars = scene_data.get('characters', [])
                 characters_str = ", ".join(raw_chars) if isinstance(raw_chars, list) else str(raw_chars)
                 
-                # [수정 2] Neo4j 전송 시 글자수 제한 해제 (description[:200] -> description)
+                # Neo4j 전송 시 글자수 제한 해제 (description 전체 전송)
                 neo4j_data = StoryNodeData(
                     node_id=neo4j_node_uid,
                     phase=phase_name,
                     title=title,
                     setting=setting,
                     characters=characters_str, 
-                    description=description, # 전체 텍스트 전송
+                    description=description, 
                     purpose=str(purpose),
                     character_state=char_states_str
                 )
@@ -348,8 +351,9 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         "**[필수 조건]**\n"
         "1. **같은 상황(Scene)에 대한 서로 다른 행동**이어야 합니다.\n"
         f"2. **선택지 텍스트('text')에는 '주인공'이라는 단어를 절대 쓰지 말고, 주인공의 이름 '{protagonist_name}'을 사용하세요.**\n"
-        "3. 'result'(결과)는 선택지 행동의 직후 결과를 묘사하는 **완결된 문장**이어야 합니다.\n"
-        "4. 다음 장면의 내용 자체는 바뀌지 않으므로, 결과 텍스트는 다음 장면의 첫 부분과 자연스럽게 이어져야 합니다."
+        "3. 'result'(결과)는 선택지 행동으로 인해 발생한 직후 결과를 묘사하는 **완결된 문장**이어야 합니다.\n"
+        "4. 다음 장면의 내용 자체는 바뀌지 않으므로, 결과 텍스트는 다음 장면의 첫 부분과 자연스럽게 이어져야 합니다.\n"
+        "5. 다음 장면의 첫 부분과 자연스럽게 이어지게 하기 위해 한 문장의 서술로는 부족하다면, 두 문장으로 서술해도 좋습니다."
     )
     
     for i in range(len(nodes) - 1):
