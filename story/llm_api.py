@@ -322,7 +322,9 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         "후속작을 암시하거나, '우리의 모험은 계속된다' 식의 열린 결말로 끝내지 마세요. 모든 갈등이 해소되고 상황이 종료된 명확한 엔딩을 쓰세요."
     )
     
-    needed_nodes = 8 - start_node_index
+    # [수정 1] 총 노드 수 변경 (8개 -> 12개)
+    # 각 단계별 3개씩 * 4단계 = 12개
+    needed_nodes = 12 - start_node_index
     
     user_prompt = (
         f"시놉시스: {synopsis}\n"
@@ -333,13 +335,19 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         "형식: {'scenes': [...]}"
     )
     
-    res = call_llm(sys_prompt, user_prompt, json_format=True) 
+    # [수정 2] max_tokens 증가 (4000 -> 8000)
+    # 노드 개수가 늘어나면 응답 길이가 길어지므로 토큰 제한을 늘려줍니다.
+    res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=8000) 
     
     scenes = res.get('scenes', [])
     
     for i, scene_data in enumerate(scenes):
         current_idx = start_node_index + i
-        phase_idx = min(current_idx // 2, 3)
+        
+        # [수정 3] 단계(Phase) 할당 로직 변경 (// 2 -> // 3)
+        # 0,1,2 -> index 0 (발단)
+        # 3,4,5 -> index 1 (전개) ...
+        phase_idx = min(current_idx // 3, 3)
         phase_name = phases[phase_idx]
         
         title = scene_data.get('title', '무제')
@@ -356,7 +364,6 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
                 raw_chars = scene_data.get('characters', [])
                 characters_str = ", ".join(raw_chars) if isinstance(raw_chars, list) else str(raw_chars)
                 
-                # Neo4j 전송 시 글자수 제한 해제 (description 전체 전송)
                 neo4j_data = StoryNodeData(
                     node_id=neo4j_node_uid,
                     phase=phase_name,
