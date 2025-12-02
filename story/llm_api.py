@@ -31,23 +31,19 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            # max_tokens 5000 이상일 경우 stream=True 필수
-            stream_option = True
+            stream_option = False # JSON 모드 등 안정성을 위해 False로 변경 고려 가능
             
             response = client.chat.completions.create(
                 model=MODEL_NAME, 
                 messages=messages, 
                 response_format=response_format, 
-                temperature=0.8,  # 창의성을 위해 온도를 약간 높임
-                max_tokens=8000, 
+                temperature=0.7, # 0.8 -> 0.7 (지시 사항 준수율 높임)
+                max_tokens=4000, 
                 timeout=90,
                 stream=stream_option 
             )
             
-            content = ""
-            for chunk in response:
-                if chunk.choices[0].delta.content is not None:
-                    content += chunk.choices[0].delta.content
+            content = response.choices[0].message.content
 
             if json_format:
                 cleaned = content.replace("```json", "").replace("```", "").strip()
@@ -66,12 +62,12 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
 
 def create_story_pipeline(user_world_setting):
     """
-    스토리 생성 전체 파이프라인
+    스토리 생성 전체 파이프라인 (수정된 요구사항 반영)
     """
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
 
-    # 1. 설정 구체화 및 주인공 정의 (이름 자동 생성 포함)
+    # 1. 설정 구체화 및 주인공 정의 (Req 1, 18: 이름 강제 생성)
     refined_setting, protagonist_name = _refine_setting_and_protagonist(user_world_setting)
     print(f"✅ Refined Setting: {refined_setting[:50]}... / Protagonist: {protagonist_name}")
 
@@ -80,20 +76,23 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭 (사용자 입력 분석 강화)
+    # 2. 클리셰 매칭 (Req 2)
     matched_cliche = _match_cliche(refined_setting)
+    if not matched_cliche:
+        raise ValueError("적절한 클리셰를 찾지 못했습니다.")
     print(f"✅ Matched Cliche: {matched_cliche.title}")
     
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
+    # 3. 시놉시스 생성 (Req 3: 2000자 내외, 감정선 벤치마킹, 사건 재구성)
     synopsis = _generate_synopsis(story, matched_cliche, protagonist_name)
     story.synopsis = synopsis
     story.save()
 
-    # 3. 인물 내면 상태 분석
+    # 4. 인물 내면 상태 분석 및 저장 (Req 4)
     _analyze_and_save_character_state(story, synopsis, context="Initial Synopsis")
 
-    # 4. 초기 노드 생성
+    # 5 & 6. 초기 노드 생성 (Req 5, 6, 19: 500자 내외, 내면 데이터 반영)
     original_nodes = _create_nodes_from_synopsis(
         story, synopsis, protagonist_name, 
         start_node_index=0, 
@@ -102,10 +101,10 @@ def create_story_pipeline(user_world_setting):
     )
     
     if not original_nodes or len(original_nodes) < 2:
-        print("❌ [Error] 노드 생성 실패. LLM 응답이 비어있거나 형식이 잘못되었습니다.")
+        print("❌ [Error] 노드 생성 실패.")
         raise ValueError("AI가 스토리 노드를 생성하지 못했습니다.")  
     
-    # 5. 첫 노드 연결 (Neo4j)
+    # Neo4j 연결
     if original_nodes:
         try:
             first_node_uid = f"{universe_id}_{original_nodes[0].id}"
@@ -113,11 +112,13 @@ def create_story_pipeline(user_world_setting):
         except Exception as e:
             print(f"Neo4j Link Error: {e}")
 
-    # 6. 선형 연결
+    # 7. 선형 연결 (Req 7: 같은 노드로 이어지는 선택지 2개 생성)
     _connect_linear_nodes(original_nodes, universe_id, protagonist_name)
 
-    # 7. 비틀기(Twist) 설정
+    # 8. 비틀기(Twist) 지점 찾기 (Req 8)
     twist_node_index = _find_twist_point_index(original_nodes)
+    
+    # 인덱스 안전장치
     if twist_node_index >= len(original_nodes) - 1: 
         twist_node_index = len(original_nodes) - 2
     if twist_node_index < 0: twist_node_index = 0
@@ -126,17 +127,21 @@ def create_story_pipeline(user_world_setting):
     story.twist_point_node_id = twist_node.id
     story.save()
 
-    accumulated = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
+    # 변주 지점 이전까지의 내용 누적
+    accumulated_content = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
-    # 8. 비틀린 시놉시스 생성 (같은 장르 내 변주)
-    twist_cliche, twisted_synopsis = _generate_twisted_synopsis_data(story, accumulated, twist_node.chapter_phase)
-    story.twist_cliche = twist_cliche
+    # 9. 비틀린 시놉시스 생성 (Req 9, 20: 동일 클리셰 내 변주)
+    # 기존 코드처럼 다른 클리셰를 찾지 않고, 현재 클리셰 정보를 넘깁니다.
+    twisted_synopsis = _generate_twisted_synopsis_data(story, accumulated_content, twist_node.chapter_phase)
+    
+    # story.twist_cliche = story.main_cliche # 동일 클리셰 사용
     story.twisted_synopsis = twisted_synopsis
     story.save()
     
+    # 10. 비틀린 시놉시스 기반 내면 분석 (Req 10)
     _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
 
-    # 9. 비틀기 노드 생성
+    # 11. 비틀기 노드 생성 (Req 11: 500자 내외, 1000자 챕터 분할 로직 포함)
     new_branch_nodes = _create_nodes_from_synopsis(
         story, twisted_synopsis, protagonist_name,
         start_node_index=twist_node_index+1, 
@@ -144,12 +149,16 @@ def create_story_pipeline(user_world_setting):
         universe_id=universe_id
     )
 
-    # 10. 분기 처리
+    # 12. 분기 처리 (Req 12: 기존 노드 + 새 노드로 갈라지는 4개의 선택지)
     if new_branch_nodes:
-        new_next = new_branch_nodes[0]
-        _add_twist_branch_choices_only(twist_node, new_next, universe_id, protagonist_name)
+        original_next_node = original_nodes[twist_node_index + 1] # 기존 경로의 다음 노드
+        twist_next_node = new_branch_nodes[0] # 새로운 경로의 다음 노드
+        
+        # 기존 2개 선택지는 7번 단계에서 이미 생성됨. 
+        # 여기에 추가로 반전 경로로 가는 2개 선택지를 더 생성함.
+        _add_twist_branch_choices_only(twist_node, twist_next_node, universe_id, protagonist_name)
 
-    # 11. 새 브랜치 내부 연결
+    # 13. 새 브랜치 내부 연결 (Req 13)
     _connect_linear_nodes(new_branch_nodes, universe_id, protagonist_name)
 
     return story.id
@@ -159,12 +168,11 @@ def create_story_pipeline(user_world_setting):
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
-    # [수정] 주인공 이름 창작 지시 강화
+    # [Req 18] 이름 강제 생성
     sys_prompt = (
-        "당신은 창의적인 스토리 설정 분석가입니다. 사용자의 입력에서 모호한 설정을 확정하고, "
-        "이야기의 중심이 될 주인공(Protagonist)을 정의하세요. "
-        "**만약 사용자가 주인공의 이름을 지정하지 않았다면, 세계관과 분위기에 어울리는 멋진 이름을 직접 창작해서 지어주세요.** "
-        "절대 '주인공', '무명', '행인1' 같은 성의 없는 이름을 사용하지 마세요."
+        "당신은 창의적인 스토리 작가입니다. 사용자의 입력을 분석하여 세계관을 확정하고 주인공을 정의하세요. "
+        "**[중요] 사용자가 주인공의 이름을 명시하지 않았다면, 세계관과 분위기에 완벽하게 어울리는 이름을 반드시 창작해야 합니다.** "
+        "절대 '주인공', '행인1' 등의 성의 없는 이름이나 기본값을 사용하지 마세요. 이름은 반드시 존재해야 합니다."
     )
     user_prompt = (
         f"사용자 입력: {raw_setting}\n\n"
@@ -177,25 +185,24 @@ def _refine_setting_and_protagonist(raw_setting):
     )
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     setting = res.get('refined_setting', raw_setting)
-    name = res.get('protagonist_name', '알렉스') # 혹시라도 비어있으면 임의의 이름
+    name = res.get('protagonist_name', '') 
     
-    # 안전장치: 여전히 '주인공'이라고 답했다면 강제로 랜덤 성씨라도 붙임 (여기선 간단히 처리)
-    if name.strip() == "주인공":
-        name = "이서준" # 임시 기본값
+    if not name or name.strip() in ["주인공", "나", "Unknown"]:
+        # 비상용 랜덤 이름 생성
+        name = "이시현" 
         
     return setting, name
 
 def _match_cliche(setting):
+    # [Req 2] DB의 모든 클리셰 로드
     all_cliches = Cliche.objects.select_related('genre').all()
     if not all_cliches.exists(): return None
     
     cliche_info = "\n".join([f"ID {c.id}: [{c.genre.name}] {c.title} - {c.summary}" for c in all_cliches])
     
-    # [수정] 클리셰 선정 기준 강화
     sys_prompt = (
-        "당신은 최고의 스토리 기획자입니다. 사용자가 입력한 설정의 분위기, 장르적 코드, 핵심 소재를 깊이 분석하세요. "
-        "제공된 클리셰 목록 중에서, 해당 설정과 결합했을 때 **가장 극적이고 흥미로운 화학 작용을 일으킬 수 있는 최적의 클리셰 하나**를 선택하세요. "
-        "단순히 키워드가 일치하는 것이 아니라, 이야기의 재미를 극대화할 수 있는 것을 고르세요."
+        "사용자의 설정과 가장 잘 어울리는 클리셰(Cliche)를 하나 선택하세요. "
+        "단순히 장르만 맞추는 것이 아니라, 소재와 분위기를 고려하여 최적의 매칭을 수행하세요."
     )
     
     res = call_llm(
@@ -207,33 +214,34 @@ def _match_cliche(setting):
     try: 
         return Cliche.objects.get(id=res['cliche_id'])
     except: 
-        # LLM 응답 실패 시 랜덤으로라도 다양성을 줌 (기존에는 무조건 first()였음)
-        print("⚠️ [Warning] 클리셰 매칭 실패 또는 파싱 에러. 임의의 클리셰를 선택합니다.")
         return random.choice(all_cliches) if all_cliches else None
 
 def _generate_synopsis(story, cliche, protagonist_name):
-    # [수정] 한자 사용 금지 재강조
+    # [Req 3] 시놉시스 생성 (2000자 내외, 사건 재구성, 감정선 벤치마킹)
     sys_prompt = (
-        "당신은 베스트셀러 소설가입니다. 다음 설정과 클리셰 구조를 바탕으로 기승전결이 확실한 시놉시스를 작성하세요. "
-        "문체는 반드시 '~한다', '~했다'로 끝나는 건조한 서술체를 사용하세요. "
-        "**절대 괄호 안에 한자(Chinese Characters)를 병기하지 마십시오. 오직 순수 한글로만 작성해야 합니다.**"
+        "당신은 베스트셀러 작가입니다. 사용자의 설정과 선택된 클리셰를 결합하여 기승전결(발단-전개-절정-결말)이 완벽한 시놉시스를 작성하세요. "
+        "1. **감정선과 갈등 구조**는 참고 작품을 벤치마킹하세요. "
+        "2. **사건의 구체적인 내용, 원인, 해결 방식**은 사용자 설정(배경, 능력)을 사용하여 완전히 새롭게 창작하세요. "
+        "3. 분량은 공백 포함 2000자 내외로 풍성하게 작성하세요."
     )
     user_prompt = (
         f"세계관: {story.user_world_setting}\n"
         f"주인공: {protagonist_name}\n"
-        f"적용 클리셰: {cliche.title}\n"
-        f"가이드: {cliche.structure_guide}\n"
+        f"적용 클리셰: {cliche.title} ({cliche.summary})\n"
+        f"클리셰 가이드: {cliche.structure_guide}\n"
         f"참고 작품 감정선: {cliche.example_work_summary}\n\n"
-        "지시: 사건의 원인과 해결 방식은 사용자 설정을 따르되, 감정선은 참고 작품을 벤치마킹하여 2000자 내외로 작성하세요."
+        "위 정보를 바탕으로 전체 시놉시스를 작성하세요."
     )
     return call_llm(sys_prompt, user_prompt)
 
 def _analyze_and_save_character_state(story, text, context):
+    # [Req 4, 10] 인물 내면 변화 추출 및 저장
     sys_prompt = (
-        "텍스트를 분석하여 등장인물들의 내면 상태(감정, 신뢰도, 사상, 육체 상태 등)를 갱신하세요. "
-        "이 데이터는 이후 스토리의 개연성을 위해 사용됩니다."
+        "텍스트를 심층 분석하여 등장인물들의 내면 상태 변화를 추출하세요. "
+        "각 사건, 행동, 결정이 인물에게 어떤 감정적, 사상적, 관계적 변화를 주었는지 구체적으로 기록해야 합니다. "
+        "이 데이터는 이후 스토리의 개연성을 검증하는 데 사용됩니다."
     )
-    user_prompt = f"텍스트: {text}\n출력 형식: {{'캐릭터이름': {{'emotion': '...', 'trust': '...', 'physical': '...'}}}}"
+    user_prompt = f"텍스트: {text}\n출력 형식: {{'캐릭터이름': {{'emotion': '...', 'trust': '...', 'ideology': '...', 'relationship_change': '...'}}}}"
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     for name, state in res.items():
@@ -252,51 +260,54 @@ def _get_latest_character_states(story):
     return json.dumps(latest_states, ensure_ascii=False)
 
 def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_index=0, is_twist_branch=False, universe_id=None):
+    # [Req 5, 6, 19] 노드 생성 (각 500자, 내면 데이터 반영, 결말 완결성)
     phases = ["발단", "전개", "절정", "결말"]
     nodes = []
     char_states_str = _get_latest_character_states(story)
 
-    # [수정] 한자 사용 금지 및 행동 이유 명시
     sys_prompt = (
-        f"당신은 소설가입니다. 시놉시스를 바탕으로 상세한 장면(Scene)들을 생성해야 합니다. "
-        f"주인공은 '{protagonist_name}'입니다. "
-        "각 장면의 'content'는 반드시 **공백 포함 1000자 이상의 아주 구체적이고 묘사가 풍부한 줄거리**여야 합니다. "
-        "문체는 '~한다' 체로 통일하고, **절대 한자를 사용하지 마세요.** "
-        "**[중요] 인물이 특정 행동을 할 때는, 그 행동을 하는 심리적/상황적 이유를 명시적으로 서술하여 개연성을 부여하세요.**"
+        f"당신은 인터랙티브 스토리 게임의 작가입니다. 시놉시스를 바탕으로 플레이어가 진행할 구체적인 장면(Node)들을 생성하세요. "
+        f"주인공은 '{protagonist_name}'입니다.\n"
+        "**[제약 사항]**\n"
+        "1. 각 장면의 내용은 **공백 포함 500자 내외**로 간결하면서도 몰입감 있게 작성하세요.\n"
+        "2. **제공된 인물 내면 상태(Character State)를 반드시 반영**하여, 인물의 말과 행동이 내면과 일치하고 개연성을 가지도록 하세요.\n"
+        "3. 문체는 서술형(~한다)을 사용하세요."
     )
     
     if is_twist_branch:
-        sys_prompt += " 특히 마지막 장면은 이야기가 **완벽하게 종결**되어야 합니다. 열린 결말이 아닌 확실한 끝을 맺으세요."
+        sys_prompt += "\n4. **[중요] 마지막 장면에서는 이야기가 열린 결말 없이 완벽하게 종결되어야 합니다.**"
 
+    # 생성해야 할 노드 수 계산 (기본 8개 중 남은 것)
+    needed_nodes = 8 - start_node_index
+    
     user_prompt = (
         f"시놉시스: {synopsis}\n"
-        f"현재 인물 상태: {char_states_str}\n"
-        f"주의: {'이것은 반전(Twist) 이후의 이야기입니다.' if is_twist_branch else '이것은 초기 스토리입니다.'}\n\n"
-        "다음 키를 포함한 JSON 리스트로 8개의 장면을 생성하세요:\n"
-        "['title', 'description' (여기에 1000자 이상 줄거리), 'setting', 'characters', 'purpose']\n"
+        f"현재 인물 내면 상태: {char_states_str}\n"
+        f"현재 단계: {'Twist 이후 스토리' if is_twist_branch else '초기 스토리'}\n\n"
+        f"다음 키를 포함한 JSON 리스트로 {needed_nodes}개의 장면을 순서대로 생성하세요:\n"
+        "['title', 'description' (500자 내외 줄거리), 'setting', 'characters', 'purpose']\n"
         "형식: {'scenes': [...]}"
     )
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     
     scenes = res.get('scenes', [])
-    target_scenes = scenes[start_node_index:]
     
-    for i, scene_data in enumerate(target_scenes):
+    for i, scene_data in enumerate(scenes):
         current_idx = start_node_index + i
-        if current_idx >= 8: break 
-        
-        phase_name = phases[min(current_idx // 2, 3)]
+        # 4개의 챕터(발단,전개,절정,결말)를 각각 2개의 노드로 나눔 -> 인덱스 // 2
+        phase_idx = min(current_idx // 2, 3)
+        phase_name = phases[phase_idx]
         
         title = scene_data.get('title', '무제')
         description = scene_data.get('description', '')
         setting = scene_data.get('setting', '')
         purpose = scene_data.get('purpose', '')
-        django_content = description
-
-        node = StoryNode.objects.create(story=story, chapter_phase=phase_name, content=django_content)
+        
+        node = StoryNode.objects.create(story=story, chapter_phase=phase_name, content=description)
         nodes.append(node)
         
+        # Neo4j Sync
         if universe_id:
             try:
                 neo4j_node_uid = f"{universe_id}_{node.id}"
@@ -320,23 +331,31 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     return nodes
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
+    # [Req 7, 13, 15, 16, 17] 선형적 연결 선택지 생성
     sys_prompt = (
-        f"두 장면을 잇는 선택지를 생성하세요. 주인공 '{protagonist_name}'의 입장에서 취할 수 있는 구체적인 행동이나 대사여야 합니다. "
-        "추상적인 표현(예: '갈등의 시작')은 금지입니다. "
-        "각 선택지의 결과(result)는 다음 장면의 첫 문장과 자연스럽게 이어지도록 짧은 행동 묘사(~한다)로 작성하세요."
+        f"현재 장면에서 다음 장면으로 넘어가기 위한 선택지 2개를 생성하세요. 주인공 '{protagonist_name}'의 입장이 되어야 합니다.\n"
+        "**[필수 조건]**\n"
+        "1. **같은 상황(Scene)에 대한 서로 다른 행동**이어야 합니다.\n"
+        "2. 선택지의 주체는 오직 주인공 한 명입니다.\n"
+        "3. 'result'(결과)는 선택지 행동의 직후 결과를 묘사하는 **완결된 문장**이어야 합니다.\n"
+        "4. 다음 장면의 내용 자체는 바뀌지 않으므로, 결과 텍스트는 다음 장면의 첫 부분과 자연스럽게 이어져야 합니다."
     )
     
     for i in range(len(nodes) - 1):
         curr = nodes[i]
         next_n = nodes[i+1]
+        
+        # 링크드 리스트 연결
         next_n.prev_node = curr
         next_n.save()
         
         user_prompt = (
-            f"현재 장면 요약: {curr.content[-500:]}\n"
-            f"다음 장면 요약: {next_n.content[:500]}\n\n"
-            "형식: {'choices': [{'text': '주인공이 ~한다 (선택지 텍스트)', 'result': '그 결과 ~했다 (행동 묘사)'}]}"
-            "선택지는 2개 생성하세요."
+            f"현재 장면: {curr.content[-300:]}\n"
+            f"다음 장면(이어질 내용): {next_n.content[:300]}\n\n"
+            "형식: {'choices': ["
+            "{'text': '주인공이 ~한다 (행동 1)', 'result': '그 결과 ~했다. (완결된 문장)'}, "
+            "{'text': '주인공이 ~한다 (행동 2)', 'result': '그 결과 ~했다. (완결된 문장)'}"
+            "]}"
         )
         
         res = call_llm(sys_prompt, user_prompt, json_format=True)
@@ -352,6 +371,7 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
                 next_node=next_n, 
                 is_twist_path=False
             )
+            # Neo4j Sync
             if universe_id:
                 try:
                     curr_uid = f"{universe_id}_{curr.id}"
@@ -360,63 +380,62 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
                 except: pass
 
 def _find_twist_point_index(nodes):
+    # [Req 8] 변주 지점 찾기
     if len(nodes) < 4: return 1
-    summaries = [f"Idx {i}: {n.content[:100]}..." for i, n in enumerate(nodes[:-2])]
+    summaries = [f"Idx {i}: {n.content[:100]}..." for i, n in enumerate(nodes[:-2])] # 결말 직전까지만 고려
     
     res = call_llm(
-        "스토리의 장르를 비틀기에 가장 적합한 지점(Index)을 하나 고르세요.", 
+        "제공된 스토리 흐름을 보고, 클리셰를 비틀어 예상치 못한 방향(Twist)으로 이야기를 전개하기 가장 좋은 지점(Index)을 하나 고르세요.", 
         "\n".join(summaries) + "\n출력형식: {'index': 숫자}", 
         json_format=True
     )
     idx = res.get('index', 2)
+    # 인덱스 보정
     if idx < 1: idx = 1
     if idx >= len(nodes) - 2: idx = len(nodes) - 3
     
-    nodes[idx].is_twist_point = True
-    nodes[idx].save()
     return idx
 
-def _generate_twisted_synopsis_data(story, accumulated, phase):
-    # 같은 장르 내 다른 클리셰만 선택
-    all_cliches = Cliche.objects.filter(genre=story.main_cliche.genre).exclude(id=story.main_cliche.id).all()
-    if not all_cliches.exists():
-        all_cliches = Cliche.objects.exclude(id=story.main_cliche.id).all()
+def _generate_twisted_synopsis_data(story, accumulated_content, current_phase):
+    # [Req 9, 20] 동일 클리셰 내에서의 변주 시놉시스 생성
+    # 기존 코드의 다른 클리셰 검색 로직 제거
     
-    if not all_cliches: return None, ""
-    
-    cliche_info = "\n".join([f"ID {c.id}: {c.title}" for c in all_cliches])
-    
-    rec_res = call_llm(
-        f"반전의 대가입니다. 현재까지의 이야기를 비틀어 **같은 장르({story.main_cliche.genre.name}) 내의 다른 클리셰**로 전환하려 합니다. 가장 적합한 클리셰 ID를 추천하세요.", 
-        f"현재까지 줄거리: {accumulated[-2000:]}\n후보 목록: {cliche_info}\n출력: {{'cliche_id': 숫자}}", 
-        json_format=True
-    )
-    try: new_cliche = Cliche.objects.get(id=rec_res['cliche_id'])
-    except: new_cliche = all_cliches.first()
-    
-    # [수정] 한자 사용 금지
-    twisted_synopsis = call_llm(
-        "소설가입니다. 기존 스토리의 흐름을 유지하다가 급격하게 새로운 클리셰(같은 장르)로 전환되는 시놉시스를 작성하세요. **한자를 사용하지 마세요.**",
-        f"지금까지 내용: {accumulated}\n새로운 클리셰: {new_cliche.title} ({new_cliche.summary})\n"
-        "조건: 문체는 '~한다'로 통일. 구체적인 줄거리 작성."
-    )
-    return new_cliche, twisted_synopsis
-
-def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name):
     sys_prompt = (
-        f"장르적 반전(Twist)이 일어나는 분기점입니다. 주인공 '{protagonist_name}'의 입장에서, "
-        "완전히 새로운 전개로 이어지는 파격적인 행동 선택지 2개를 생성하세요. "
-        "기존 흐름의 선택지는 이미 존재하므로 생성하지 마세요."
+        "당신은 반전 스토리의 대가입니다. 지금까지 진행된 스토리의 클리셰를 유지하되, "
+        "**이야기의 흐름을 비틀어(Twist) 전혀 다른 양상으로 전개되는 새로운 시놉시스**를 작성하세요. "
+        "새로운 클리셰를 도입하지 말고, 현재 클리셰 안에서 사건의 해석을 달리하거나 돌발 변수를 추가하여 결말을 바꾸세요."
     )
     
     user_prompt = (
-        f"현재 상황: {node.content[-500:]}\n"
-        f"새로운 반전 다음 장면(Twist Scene): {new_next.content[:500]}\n\n"
+        f"현재 적용된 클리셰: {story.main_cliche.title} ({story.main_cliche.summary})\n"
+        f"현재까지 진행된 줄거리: {accumulated_content[-1000:]}\n"
+        f"현재 단계: {current_phase} 이후\n\n"
+        "지시사항: 위 줄거리 이후부터 이어질 새로운 '전개-절정-결말' 시놉시스를 작성하세요. 인물들의 내면 변화를 반드시 반영해야 합니다."
+    )
+    
+    twisted_synopsis = call_llm(sys_prompt, user_prompt)
+    return twisted_synopsis
+
+def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name):
+    # [Req 12] 변주 경로로 이어지는 추가 선택지 2개 생성
+    # 기존 노드와 새로운 변주 노드를 잇는 역할
+    
+    sys_prompt = (
+        f"이야기가 극적으로 갈라지는 분기점입니다. 주인공 '{protagonist_name}'의 선택에 따라 이야기가 완전히 바뀝니다. "
+        "새로운 전개(Twist)로 이어지는 파격적인 행동 선택지 2개를 생성하세요.\n"
+        "**[필수 조건]**\n"
+        "1. 기존의 안전한 선택과는 다른, 위험하거나 의외의 행동이어야 합니다.\n"
+        "2. 선택지의 결과(result)는 다음 장면(Twist Scene)의 첫 부분과 자연스럽게 연결되는 완결된 문장이어야 합니다."
+    )
+    
+    user_prompt = (
+        f"현재 상황: {node.content[-300:]}\n"
+        f"새로운 반전 장면 도입부: {new_next.content[:300]}\n\n"
         "형식: JSON\n"
         "{\n"
         "  'twist_choices': [\n"
-        "    {'text': '주인공이 ~한다 (반전 선택지 1)', 'result': '그 결과 ~했다'},\n"
-        "    {'text': '주인공이 ~한다 (반전 선택지 2)', 'result': '그 결과 ~했다'}\n"
+        "    {'text': '주인공이 ~한다 (반전 선택지 1)', 'result': '그 결과 ~했다. (완결된 문장)'},\n"
+        "    {'text': '주인공이 ~한다 (반전 선택지 2)', 'result': '그 결과 ~했다. (완결된 문장)'}\n"
         "  ]\n"
         "}"
     )
@@ -427,15 +446,17 @@ def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name
     new_next_uid = f"{universe_id}_{new_next.id}"
 
     for item in res.get('twist_choices', []):
-        text = item.get('text', '새로운 운명을 선택한다')
+        text = item.get('text', '운명을 바꾸는 선택을 한다')
         result = item.get('result', '')
+        
         NodeChoice.objects.create(
             current_node=node, 
             choice_text=text, 
             result_text=result, 
             next_node=new_next, 
-            is_twist_path=True 
+            is_twist_path=True # 이것은 반전 경로임
         )
+        
         if universe_id:
             try: sync_choice_to_neo4j(curr_uid, new_next_uid, text, result, is_twist=True)
             except: pass
