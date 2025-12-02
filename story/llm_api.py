@@ -21,7 +21,11 @@ BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
-def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
+def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_retries=3):
+    """
+    LLM 호출 함수
+    - stream=True일 경우, 응답을 스트리밍으로 받아 합쳐서 반환합니다. (긴 텍스트 생성 시 타임아웃 방지)
+    """
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
     
@@ -31,26 +35,33 @@ def call_llm(system_prompt, user_prompt, json_format=False, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            # 스트리밍 비활성화 유지
-            stream_option = False 
-            
             response = client.chat.completions.create(
                 model=MODEL_NAME, 
                 messages=messages, 
                 response_format=response_format, 
-                temperature=0.5, # 창의성 조절값
-                max_tokens=4000, 
-                timeout=90,
-                stream=stream_option 
+                temperature=0.7, 
+                max_tokens=8000, # 긴 시놉시스를 위해 토큰 제한 늘림
+                timeout=120,    # 타임아웃 여유 있게 설정
+                stream=stream 
             )
             
-            content = response.choices[0].message.content
+            content = ""
+            if stream:
+                # 스트리밍 모드: 청크를 모아서 완성
+                print("  [LLM] Streaming generating...", end="", flush=True)
+                for chunk in response:
+                    if chunk.choices[0].delta.content:
+                        content += chunk.choices[0].delta.content
+                print(" Done.")
+            else:
+                # 일반 모드
+                content = response.choices[0].message.content
 
             if json_format:
-                # JSON 파싱 전 마크다운 제거 처리 강화
                 cleaned = content.replace("```json", "").replace("```", "").strip()
                 return json.loads(cleaned)
             return content
+
         except Exception as e:
             print(f"⚠️ [LLM Error] Attempt {attempt+1}/{max_retries} Failed: {str(e)}")
             time.sleep(2)
@@ -69,7 +80,7 @@ def create_story_pipeline(user_world_setting):
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
 
-    # 1. 설정 구체화 및 주인공 정의 (이름 생성 강화)
+    # 1. 설정 구체화 및 주인공 정의
     refined_setting, protagonist_name = _refine_setting_and_protagonist(user_world_setting)
     print(f"✅ Refined Setting: {refined_setting[:50]}... / Protagonist: {protagonist_name}")
 
@@ -78,16 +89,16 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭 (로직 개선)
+    # 2. 클리셰 매칭
     matched_cliche = _match_cliche(refined_setting)
     if not matched_cliche:
-        # DB가 비어있지 않은 이상 발생하지 않아야 함
         raise ValueError("적절한 클리셰를 찾지 못했습니다.")
     print(f"✅ Matched Cliche: {matched_cliche.title}")
     
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
-    # 3. 시놉시스 생성
+    # 3. 시놉시스 생성 (스트리밍 적용, 대규모 텍스트)
+    print("  [Step 3] Generating Massive Synopsis (Streaming)...")
     synopsis = _generate_synopsis(story, matched_cliche, protagonist_name)
     story.synopsis = synopsis
     story.save()
@@ -95,7 +106,7 @@ def create_story_pipeline(user_world_setting):
     # 4. 인물 내면 상태 분석
     _analyze_and_save_character_state(story, synopsis, context="Initial Synopsis")
 
-    # 5 & 6. 초기 노드 생성 (최소 500자 보장)
+    # 5 & 6. 초기 노드 생성
     original_nodes = _create_nodes_from_synopsis(
         story, synopsis, protagonist_name, 
         start_node_index=0, 
@@ -107,7 +118,7 @@ def create_story_pipeline(user_world_setting):
         print("❌ [Error] 노드 생성 실패.")
         raise ValueError("AI가 스토리 노드를 생성하지 못했습니다.")  
     
-    # Neo4j 연결 (첫 노드)
+    # Neo4j 연결
     if original_nodes:
         try:
             first_node_uid = f"{universe_id}_{original_nodes[0].id}"
@@ -115,7 +126,7 @@ def create_story_pipeline(user_world_setting):
         except Exception as e:
             print(f"Neo4j Link Error: {e}")
 
-    # 7. 선형 연결 (주인공 이름 사용)
+    # 7. 선형 연결
     _connect_linear_nodes(original_nodes, universe_id, protagonist_name)
 
     # 8. 비틀기(Twist) 지점 찾기
@@ -132,7 +143,8 @@ def create_story_pipeline(user_world_setting):
 
     accumulated_content = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
-    # 9. 비틀린 시놉시스 생성 (동일 클리셰 변주)
+    # 9. 비틀린 시놉시스 생성 (여기도 스트리밍 적용 가능하나, 일단 기존 유지하거나 필요시 변경)
+    # 현재 요구사항은 "시놉시스 작성할 때만" 이므로 초기 시놉시스에 집중.
     twisted_synopsis = _generate_twisted_synopsis_data(story, accumulated_content, twist_node.chapter_phase)
     
     story.twisted_synopsis = twisted_synopsis
@@ -141,7 +153,7 @@ def create_story_pipeline(user_world_setting):
     # 10. 비틀린 시놉시스 기반 내면 분석
     _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
 
-    # 11. 비틀기 노드 생성 (최소 500자)
+    # 11. 비틀기 노드 생성
     new_branch_nodes = _create_nodes_from_synopsis(
         story, twisted_synopsis, protagonist_name,
         start_node_index=twist_node_index+1, 
@@ -149,10 +161,9 @@ def create_story_pipeline(user_world_setting):
         universe_id=universe_id
     )
 
-    # 12. 분기 처리 (변주 선택지 추가)
+    # 12. 분기 처리
     if new_branch_nodes:
         twist_next_node = new_branch_nodes[0]
-        # [수정 5] 동일 상황 다른 행동 선택지 생성
         _add_twist_branch_choices_only(twist_node, twist_next_node, universe_id, protagonist_name)
 
     # 13. 새 브랜치 내부 연결
@@ -165,11 +176,10 @@ def create_story_pipeline(user_world_setting):
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
-    # [수정 1] 이름 생성 강화 (하드코딩 제거)
     sys_prompt = (
         "당신은 창의적인 스토리 작가입니다. 사용자의 입력을 분석하여 세계관을 확정하고 주인공을 정의하세요. "
         "**[필수] 사용자가 주인공의 이름을 지정하지 않았다면, 세계관과 분위기에 어울리는 멋진 이름을 반드시 창작하세요.** "
-        "절대 '주인공', '나', '행인1' 같은 대명사나 성의 없는 이름을 사용하지 마세요. 구체적인 이름(예: 카엘, 지수, 아서 등)을 지어주세요."
+        "절대 '주인공', '나' 같은 대명사를 사용하지 마세요."
     )
     user_prompt = (
         f"사용자 입력: {raw_setting}\n\n"
@@ -184,21 +194,17 @@ def _refine_setting_and_protagonist(raw_setting):
     setting = res.get('refined_setting', raw_setting)
     name = res.get('protagonist_name', '') 
     
-    # 만약 AI가 이름을 못 지었을 경우를 대비한 2차 안전장치 (하드코딩 대신 랜덤 생성 요청)
     if not name or name.strip() in ["주인공", "나", "Unknown", "미정"]:
-        # 간단히 다시 요청
         name_res = call_llm("이 세계관에 어울리는 주인공 이름을 1개만 단답형으로 지어줘.", f"세계관: {setting}")
         name = name_res.strip().replace("이름:", "").replace(".", "")
-        if not name: name = "이안" # 최후의 수단
+        if not name: name = "이안"
         
     return setting, name
 
 def _match_cliche(setting):
-    # [수정 1] 클리셰 선택 다양화
     all_cliches = Cliche.objects.select_related('genre').all()
     if not all_cliches.exists(): return None
     
-    # 목록을 셔플하여 프롬프트에 제공 (순서 편향 방지)
     cliche_list = list(all_cliches)
     random.shuffle(cliche_list)
     
@@ -206,7 +212,6 @@ def _match_cliche(setting):
     
     sys_prompt = (
         "사용자의 설정과 가장 잘 어울리는 클리셰(Cliche)를 하나 선택하세요. "
-        "단순히 첫 번째 것을 고르지 말고, 사용자의 설정 내용, 장르, 분위기를 깊게 분석하여 가장 적절한 것을 찾으세요. "
         "출력은 반드시 JSON 형식입니다."
     )
     
@@ -220,32 +225,39 @@ def _match_cliche(setting):
         selected_id = res['cliche_id']
         return Cliche.objects.get(id=selected_id)
     except: 
-        # 실패 시 랜덤 선택
         print("⚠️ [Warning] 클리셰 매칭 실패. 랜덤으로 선택합니다.")
         return random.choice(all_cliches)
 
 def _generate_synopsis(story, cliche, protagonist_name):
-    # [Req 3] 시놉시스 생성
+    # [Req Update] 2000자 이상, 스트리밍 호출, 인물 변화 상세 포함
     sys_prompt = (
-        "당신은 베스트셀러 작가입니다. 사용자의 설정과 선택된 클리셰를 결합하여 기승전결(발단-전개-절정-결말)이 완벽한 시놉시스를 작성하세요. "
-        "1. **감정선과 갈등 구조**는 참고 작품을 벤치마킹하세요. "
-        "2. **사건의 구체적인 내용, 원인, 해결 방식**은 사용자 설정(배경, 능력)을 사용하여 완전히 새롭게 창작하세요. "
-        "3. 분량은 공백 포함 2000자 내외로 풍성하게 작성하세요."
+        "당신은 대서사시를 집필하는 메인 시나리오 작가입니다. "
+        "사용자의 설정과 클리셰를 결합하여, **공백 포함 최소 2000자 이상의 매우 상세하고 긴 시놉시스**를 작성해야 합니다.\n\n"
+        "**[필수 작성 가이드]**\n"
+        "1. **분량**: 반드시 2000자를 넘기세요. 사건을 단순히 요약하지 말고, 장면 묘사, 대사, 분위기를 포함해 구체적으로 서술하세요.\n"
+        "2. **구성 요소** (다음 항목들을 반드시 포함하여 순서대로 작성하세요):\n"
+        "   - **[1. 주요 등장인물 소개]**: 주인공('{protagonist_name}')과 주변 인물들의 성격, 외모, 배경, 욕망을 상세히 기술.\n"
+        "   - **[2. 전체 줄거리 (기승전결)]**: 발단-전개-절정-결말의 흐름으로 사건을 서술.\n"
+        "   - **[3. 인물 내면 변화 보고서]**: 스토리가 진행됨에 따라 주인공과 주요 인물이 겪는 **감정(Emotion), 신뢰(Trust), 사상(Ideology)의 변화 과정**을 단계별로 분석하여 기술.\n\n"
+        "3. **감정선**: 클리셰의 전형적인 흐름을 따르되, 사용자의 설정(세계관)을 반영하여 독창적인 디테일을 추가하세요."
     )
+    
     user_prompt = (
         f"세계관: {story.user_world_setting}\n"
         f"주인공: {protagonist_name}\n"
         f"적용 클리셰: {cliche.title} ({cliche.summary})\n"
         f"클리셰 가이드: {cliche.structure_guide}\n"
         f"참고 작품 감정선: {cliche.example_work_summary}\n\n"
-        "위 정보를 바탕으로 전체 시놉시스를 작성하세요."
+        "위 정보를 바탕으로 대규모 시놉시스를 작성하세요."
     )
-    return call_llm(sys_prompt, user_prompt)
+    
+    # [Streaming ON] 긴 생성을 위해 스트리밍 모드 사용
+    return call_llm(sys_prompt, user_prompt, stream=True)
 
 def _analyze_and_save_character_state(story, text, context):
     sys_prompt = (
         "텍스트를 심층 분석하여 등장인물들의 내면 상태 변화를 추출하세요. "
-        "각 사건, 행동, 결정이 인물에게 어떤 감정적, 사상적, 관계적 변화를 주었는지 구체적으로 기록해야 합니다."
+        "특히 시놉시스에 명시된 '인물 내면 변화' 부분을 중점적으로 참고하세요."
     )
     user_prompt = f"텍스트: {text}\n출력 형식: {{'캐릭터이름': {{'emotion': '...', 'trust': '...', 'ideology': '...', 'relationship_change': '...'}}}}"
     
@@ -266,7 +278,6 @@ def _get_latest_character_states(story):
     return json.dumps(latest_states, ensure_ascii=False)
 
 def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_index=0, is_twist_branch=False, universe_id=None):
-    # [수정 2] 최소 500자 보장
     phases = ["발단", "전개", "절정", "결말"]
     nodes = []
     char_states_str = _get_latest_character_states(story)
@@ -275,7 +286,7 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         f"당신은 인터랙티브 스토리 게임의 작가입니다. 시놉시스를 바탕으로 플레이어가 진행할 구체적인 장면(Node)들을 생성하세요. "
         f"주인공은 '{protagonist_name}'입니다.\n"
         "**[필수 제약 사항]**\n"
-        "1. 각 장면의 내용은 **공백 포함 최소 500자 이상**으로 아주 상세하고 몰입감 있게 작성해야 합니다. (너무 짧으면 안 됩니다.)\n"
+        "1. 각 장면의 내용은 **공백 포함 최소 500자 이상**으로 아주 상세하고 몰입감 있게 작성해야 합니다.\n"
         "2. **제공된 인물 내면 상태(Character State)를 반드시 반영**하여, 인물의 말과 행동이 내면과 일치하고 개연성을 가지도록 하세요.\n"
         "3. 문체는 서술형(~한다)을 사용하세요."
     )
@@ -334,12 +345,11 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     return nodes
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
-    # [수정 4] 선택지에서 '주인공' 단어 사용 금지 (이름 사용)
     sys_prompt = (
         f"현재 장면에서 다음 장면으로 넘어가기 위한 선택지 2개를 생성하세요. 주인공 '{protagonist_name}'의 입장이 되어야 합니다.\n"
         "**[필수 조건]**\n"
         "1. **같은 상황(Scene)에 대한 서로 다른 행동**이어야 합니다.\n"
-        "2. **선택지 텍스트('text')에는 '주인공'이라는 단어를 절대 쓰지 말고, 주인공의 이름 '{protagonist_name}'을 사용하세요.** (예: '{protagonist_name}은(는) 칼을 집어든다')\n"
+        f"2. **선택지 텍스트('text')에는 '주인공'이라는 단어를 절대 쓰지 말고, 주인공의 이름 '{protagonist_name}'을 사용하세요.**\n"
         "3. 'result'(결과)는 선택지 행동의 직후 결과를 묘사하는 **완결된 문장**이어야 합니다.\n"
         "4. 다음 장면의 내용 자체는 바뀌지 않으므로, 결과 텍스트는 다음 장면의 첫 부분과 자연스럽게 이어져야 합니다."
     )
@@ -413,7 +423,6 @@ def _generate_twisted_synopsis_data(story, accumulated_content, current_phase):
     return twisted_synopsis
 
 def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name):
-    # [수정 5] 변주 선택지 논리 강화 (동일 상황, 다른 행동, 이름 사용)
     sys_prompt = (
         f"이야기가 극적으로 갈라지는 분기점입니다. 주인공 '{protagonist_name}'의 선택에 따라 이야기가 완전히 바뀝니다. "
         f"이 선택지들은 **기존의 선택지들과 정확히 '동일한 상황'에서 시작되어야 합니다.** "
