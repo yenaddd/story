@@ -44,23 +44,34 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str):
     run_cypher(query, {"universe_id": universe_id, "world_setting": world_setting})
     print(f"  [Neo4j] Universe Node Created: {universe_id}")
 
-def update_universe_node_neo4j(universe_id: str, protagonist_name: str, protagonist_desc: str, synopsis: str):
-    """초기 시놉시스 및 주인공 정보 업데이트"""
+def update_universe_node_neo4j(universe_id: str, protagonist_name: str, protagonist_desc: str, synopsis: str, 
+                               world_title: str, description: str, detail_description: str, play_time: str):
+    """
+    초기 시놉시스 및 세계관 상세 정보(제목, 소개, 플레이타임) 업데이트
+    """
     query = """
     MATCH (u:Universe {universe_id: $universe_id})
     SET 
         u.protagonist_name = $protagonist_name,
         u.protagonist_desc = $protagonist_desc,
-        u.synopsis = $synopsis
+        u.synopsis = $synopsis,
+        u.title = $world_title,
+        u.description = $description,
+        u.detail_description = $detail_description,
+        u.play_time = $play_time
     """
     run_cypher(query, {
         "universe_id": universe_id, 
         "protagonist_name": protagonist_name,
         "protagonist_desc": protagonist_desc,
-        "synopsis": synopsis
+        "synopsis": synopsis,
+        "world_title": world_title,
+        "description": description,
+        "detail_description": detail_description,
+        "play_time": play_time
     })
-    print(f"  [Neo4j] Universe Node Updated with Initial Synopsis")
-
+    print(f"  [Neo4j] Universe Node Updated with Details (Title: {world_title})")
+    
 def update_universe_twist_neo4j(universe_id: str, twisted_synopsis: str):
     """[New] 변주 시놉시스 별도 필드 저장"""
     query = """

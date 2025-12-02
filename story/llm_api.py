@@ -10,7 +10,7 @@ from .models import Genre, Cliche, Story, CharacterState, StoryNode, NodeChoice
 from .neo4j_connection import (
     create_universe_node_neo4j, 
     update_universe_node_neo4j,
-    update_universe_twist_neo4j, # [추가] 변주 시놉시스 저장 함수
+    update_universe_twist_neo4j, 
     sync_node_to_neo4j, 
     link_universe_to_first_scene, 
     sync_choice_to_neo4j, 
@@ -102,8 +102,21 @@ def create_story_pipeline(user_world_setting):
     story.synopsis = synopsis
     story.save()
 
+    # [추가] 3.5 세계관 상세 정보 및 메타데이터 생성 (Title, Description, PlayTime)
+    print("  [Step 3.5] Generating Universe Details...")
+    universe_details = _generate_universe_details(refined_setting, synopsis)
+
     try:
-        update_universe_node_neo4j(universe_id, protagonist_name, protagonist_desc, synopsis)
+        update_universe_node_neo4j(
+            universe_id, 
+            protagonist_name, 
+            protagonist_desc, 
+            synopsis,
+            universe_details.get("title", "무제"),
+            universe_details.get("description", ""),
+            universe_details.get("detail_description", ""),
+            universe_details.get("play_time", "10분")
+        )
     except Exception as e:
         print(f"Neo4j Update Error: {e}")
         
@@ -491,3 +504,23 @@ def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name
         if universe_id:
             try: sync_choice_to_neo4j(curr_uid, new_next_uid, text, result, is_twist=True)
             except: pass
+    
+# [신규 추가] 세계관 상세 정보 생성 함수
+def _generate_universe_details(setting, synopsis):
+    sys_prompt = (
+        "당신은 게임 기획자이자 세계관 설정가입니다. "
+        "제공된 세계관 설정과 줄거리(시놉시스)를 바탕으로, 플레이어에게 보여줄 매력적인 세계관 소개 정보를 JSON 형식으로 작성하세요.\n"
+        "**[필수 포함 항목]**\n"
+        "1. title: 세계관의 멋진 제목 (예: 심해의 잃어버린 도시, 아틀란티스)\n"
+        "2. description: 세계관에 대한 한 줄 요약 (50자 이내)\n"
+        "3. detail_description: 세계관의 배경, 분위기, 기술 수준, 사회 구조 등을 포함한 자세한 소개글 (200자 이상)\n"
+        "4. play_time: 전체 스토리를 플레이하는 데 걸리는 예상 시간 (예: '20분', '40분')"
+    )
+    
+    user_prompt = (
+        f"세계관 설정: {setting}\n"
+        f"전체 줄거리: {synopsis[:1000]}...\n\n"
+        "위 내용을 바탕으로 JSON 데이터를 생성하세요."
+    )
+    
+    return call_llm(sys_prompt, user_prompt, json_format=True)
