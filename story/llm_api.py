@@ -42,7 +42,7 @@ def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_to
                 response_format=response_format, 
                 temperature=0.7, 
                 max_tokens=max_tokens, 
-                timeout=timeout,   
+                timeout=timeout,    
                 stream=stream 
             )
             
@@ -115,7 +115,7 @@ def create_story_pipeline(user_world_setting):
             universe_details.get("title", "무제"),
             universe_details.get("description", ""),
             universe_details.get("detail_description", ""),
-            universe_details.get("play_time", "20분")
+            universe_details.get("play_time", "30분")
         )
     except Exception as e:
         print(f"Neo4j Update Error: {e}")
@@ -123,7 +123,7 @@ def create_story_pipeline(user_world_setting):
     # 4. 인물 내면 상태 분석 (초기 시놉시스는 필요)
     _analyze_and_save_character_state(story, synopsis, context="Initial Synopsis")
 
-    # 5 & 6. 초기 노드 생성
+    # 5 & 6. 초기 노드 생성 (12개 한꺼번에, 스트리밍 On)
     original_nodes = _create_nodes_from_synopsis(
         story, synopsis, protagonist_name, 
         start_node_index=0, 
@@ -159,8 +159,7 @@ def create_story_pipeline(user_world_setting):
 
     accumulated_content = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
-    # 9. 비틀린 시놉시스 생성 (프롬프트 강화 & 스트리밍 적용)
-    # 주인공 정보 및 상세 가이드 전달
+    # 9. 비틀린 시놉시스 생성
     print("  [Step 9] Generating Twisted Synopsis (Streaming)...")
     twisted_synopsis = _generate_twisted_synopsis_data(
         story, accumulated_content, twist_node.chapter_phase, protagonist_name, protagonist_desc
@@ -169,17 +168,12 @@ def create_story_pipeline(user_world_setting):
     story.twisted_synopsis = twisted_synopsis
     story.save()
 
-    # Neo4j에 변주 시놉시스 저장 (별도 필드)
     try:
         update_universe_twist_neo4j(universe_id, twisted_synopsis)
     except Exception as e:
         print(f"Neo4j Twist Update Error: {e}")
     
-    # 10. 비틀린 시놉시스 기반 내면 분석 -> [삭제됨]
-    # 요청하신 대로 생성 단계에서 이미 포함되므로 별도 분석 과정은 생략합니다.
-    # _analyze_and_save_character_state(story, twisted_synopsis, context="Twisted Synopsis")
-
-    # 11. 비틀기 노드 생성
+    # 11. 비틀기 노드 생성 (12개 한꺼번에, 스트리밍 On)
     new_branch_nodes = _create_nodes_from_synopsis(
         story, twisted_synopsis, protagonist_name,
         start_node_index=twist_node_index+1, 
@@ -281,7 +275,8 @@ def _generate_synopsis(story, cliche, protagonist_name, protagonist_desc):
         "위 정보를 바탕으로 대규모 시놉시스를 작성하세요."
     )
     
-    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
+    # 시놉시스 생성도 길기 때문에 stream=True, timeout 기본값(혹은 증가 가능) 사용
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000, timeout=300)
 
 def _analyze_and_save_character_state(story, text, context):
     sys_prompt = (
@@ -322,8 +317,7 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         "후속작을 암시하거나, '우리의 모험은 계속된다' 식의 열린 결말로 끝내지 마세요. 모든 갈등이 해소되고 상황이 종료된 명확한 엔딩을 쓰세요."
     )
     
-    # 총 노드 수 변경 (8개 -> 12개)
-    # 각 단계별 3개씩 * 4단계 = 12개
+    # 총 노드 수 목표를 12개로 설정 (3개씩 * 4단계)
     needed_nodes = 12 - start_node_index
     
     user_prompt = (
@@ -335,20 +329,23 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
         "형식: {'scenes': [...]}"
     )
     
-    # max_tokens 증가 (4000 -> 8000)
-    # 노드 개수가 늘어나면 응답 길이가 길어지므로 토큰 제한을 늘려줍니다.
+    # [핵심 수정] 타임아웃 600초(10분) + 스트리밍 True
+    # 대규모 생성을 위해 스트리밍을 켜서 연결 유지를 보장합니다.
     res = call_llm(
-            sys_prompt, 
-            user_prompt, 
-            json_format=True, 
-            max_tokens=8000, # 긴 텍스트 생성을 위해 토큰 증가
-            timeout=600      # 10분 대기 (스트리밍 없으므로 넉넉하게)
-        )    
+        sys_prompt, 
+        user_prompt, 
+        json_format=True, 
+        max_tokens=8000, 
+        timeout=600,
+        stream=True  # <--- [중요] 연결 끊김 방지용
+    ) 
+    
     scenes = res.get('scenes', [])
     
     for i, scene_data in enumerate(scenes):
         current_idx = start_node_index + i
         
+        # 단계(Phase) 할당 로직 (3개씩)
         phase_idx = min(current_idx // 3, 3)
         phase_name = phases[phase_idx]
         
@@ -445,7 +442,6 @@ def _find_twist_point_index(nodes):
     return idx
 
 def _generate_twisted_synopsis_data(story, accumulated_content, current_phase, protagonist_name, protagonist_desc):
-    # [수정] 변주 시놉시스 생성 프롬프트 강화 (초기 시놉시스와 동일한 구조, 2000자 이상)
     sys_prompt = (
         "당신은 반전 스토리의 대가입니다. 지금까지 진행된 스토리의 클리셰를 유지하되, "
         "**이야기의 흐름을 비틀어(Twist) 전혀 다른 양상으로 전개되는 '새로운 대규모 시놉시스'**를 작성하세요.\n"
@@ -467,8 +463,8 @@ def _generate_twisted_synopsis_data(story, accumulated_content, current_phase, p
         "지시사항: 위 줄거리 이후부터 이어질 새로운 '전개-절정-결말' 시놉시스를 작성하세요."
     )
     
-    # [설정] 여기도 스트리밍 및 대용량 토큰 적용
-    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
+    # [설정] 여기도 스트리밍 및 대용량 토큰 적용, 타임아웃 추가
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000, timeout=300)
 
 def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name):
     sys_prompt = (
@@ -514,7 +510,6 @@ def _add_twist_branch_choices_only(node, new_next, universe_id, protagonist_name
             try: sync_choice_to_neo4j(curr_uid, new_next_uid, text, result, is_twist=True)
             except: pass
     
-# [신규 추가] 세계관 상세 정보 생성 함수
 def _generate_universe_details(setting, synopsis):
     sys_prompt = (
         "당신은 게임 기획자이자 세계관 설정가입니다. "
