@@ -22,8 +22,14 @@ BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
+# 공통 제약 조건 상수
+KOREAN_ONLY_RULE = "출력은 고유명사(지명, 인명 등 불가피한 경우)를 제외하고는 반드시 '한국어'로 작성해야 합니다. 영어를 섞어 쓰지 마세요."
+
 def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=120):
-    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    # 시스템 프롬프트에 한국어 제약 조건 추가
+    full_system_prompt = f"{system_prompt}\n\n[중요 규칙]\n{KOREAN_ONLY_RULE}"
+    
+    messages = [{"role": "system", "content": full_system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
     
     if not DEEPSEEK_API_KEY:
@@ -85,7 +91,7 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭 (2단계 로직 적용: 장르 선정 -> 클리셰 선정)
+    # 2. 클리셰 매칭
     matched_cliche = _match_cliche(refined_setting)
     if not matched_cliche: raise ValueError("클리셰 매칭 실패")
     
@@ -145,8 +151,9 @@ def create_story_pipeline(user_world_setting):
     accumulated_content = "\n".join([n.content for n in original_nodes[:twist_node_index+1]])
     
     print("  [Step 9] Generating Twisted Synopsis...")
+    # [수정] 모든 캐릭터 정보를 넘겨줍니다.
     twisted_synopsis = _generate_twisted_synopsis_data(
-        story, accumulated_content, twist_node.chapter_phase, protagonist_name, protagonist_info['desc']
+        story, accumulated_content, twist_node.chapter_phase, characters_info_json
     )
     story.twisted_synopsis = twisted_synopsis
     story.save()
@@ -199,19 +206,14 @@ def create_story_pipeline(user_world_setting):
 def _match_cliche(setting):
     """
     [2단계 매칭 로직]
-    Step 1. 사용자 설정(setting)과 DB의 '장르 설명'을 비교 -> 최적 장르 1개 선정
-    Step 2. 선정된 장르에 속한 클리셰들만 DB에서 로드 -> 최적 클리셰 1개 선정
     """
     
-    # ---------------------------------------------------------
-    # [Step 1] 장르 선정 (Genre Selection)
-    # ---------------------------------------------------------
+    # [Step 1] 장르 선정
     all_genres = Genre.objects.all()
     if not all_genres.exists():
         print("⚠️ DB에 장르 데이터가 없습니다.")
         return None
     
-    # 장르 설명 텍스트 구성
     genre_text_list = []
     for g in all_genres:
         desc = g.description if g.description else "설명 없음"
@@ -229,31 +231,23 @@ def _match_cliche(setting):
     
     print("  [Step 1] Selecting Genre...")
     res_1 = call_llm(sys_prompt_1, user_prompt_1, json_format=True)
-    selected_genre_name = res_1.get('genre_name', '판타지') # 기본값
+    selected_genre_name = res_1.get('genre_name', '판타지')
     
     try:
-        # LLM이 선택한 장르를 DB에서 가져옴
         selected_genre = Genre.objects.get(name=selected_genre_name)
     except Genre.DoesNotExist:
-        # 혹시 LLM이 없는 이름을 반환하면 첫 번째 장르로 fallback
         selected_genre = all_genres.first()
         print(f"  ⚠️ Genre '{selected_genre_name}' not found. Fallback to '{selected_genre.name}'")
 
     print(f"  -> Selected Genre: {selected_genre.name}")
 
 
-    # ---------------------------------------------------------
-    # [Step 2] 클리셰 선정 (Cliche Selection)
-    # ---------------------------------------------------------
-    # ★ 핵심: 선택된 장르에 해당하는 클리셰만 DB에서 필터링해서 가져옴
+    # [Step 2] 클리셰 선정
     cliches = Cliche.objects.filter(genre=selected_genre)
     
     if not cliches.exists():
-        # 해당 장르에 클리셰가 없으면 전체 중 아무거나 하나 리턴 (안전장치)
-        print("  ⚠️ No cliches found for this genre.")
         return Cliche.objects.first()
 
-    # LLM에게 보낼 프롬프트 구성 (해당 장르의 클리셰 리스트만 포함)
     cliche_text_list = []
     for c in cliches:
         info = (
@@ -292,11 +286,10 @@ def _match_cliche(setting):
         
     except Exception as e:
         print(f"  ⚠️ Cliche Selection Error: {e}. Fallback to random in genre.")
-        # 실패 시 해당 장르 내에서 랜덤 선택
         return random.choice(list(cliches))
 
 # ==========================================
-# [나머지 내부 로직 함수들 (기존 유지)]
+# [나머지 내부 로직 함수들]
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
@@ -352,9 +345,13 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     
     sys_prompt = (
         f"당신은 인터랙티브 스토리 작가입니다. 주인공 '{protagonist_name}'의 시점에서 장면(Node)들을 생성하세요.\n"
-        "각 장면은 title, description(500자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다."
+        "각 장면은 title, description(500자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다.\n\n"
+        "**[중요]**\n"
+        f"생성해야 할 노드의 개수는 총 {needed_nodes}개입니다.\n"
+        "마지막 노드(Last Node)는 반드시 이야기의 **확실한 끝(Ending)**을 맺어야 합니다.\n"
+        "어물쩍 넘어가거나 다음 이야기가 있는 것처럼 끝내지 말고, 확실한 결말을 지으세요."
     )
-    user_prompt = f"시놉시스: {synopsis}\n개수: {needed_nodes}개\nJSON 형식: {{'scenes': [...]}}"
+    user_prompt = f"시놉시스: {synopsis}\n생성 개수: {needed_nodes}개\nJSON 형식: {{'scenes': [...]}}"
     
     res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=8000)
     scenes = res.get('scenes', [])
@@ -391,11 +388,13 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     return nodes
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
+    # [수정] 자연스러운 연결을 위한 프롬프트 강화
     sys_prompt = (
-       f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 취해야 할 **가장 자연스럽고 일상적인 행동(Condition Action)**을 정의하세요.\n"
-        "이 게임은 유저가 선택지를 고르는 것이 아니라, 채팅창에 직접 행동을 입력하는 방식입니다.\n"
-        "따라서 유저가 **별도의 힌트 없이도 상황상 자연스럽게 입력할 법한 행동**(예: '문을 연다', '대답한다', '전화를 받는다')이어야 합니다.\n"
-        "너무 구체적이거나 맞추기 어려운 행동은 피하고, 다음 스토리로 자연스럽게 흘러가는 연결 고리 역할을 해야 합니다." 
+        f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 취해야 할 **자연스럽고 일상적인 행동(Condition Action)**을 정의하세요.\n"
+        "1. 유저가 별도의 힌트 없이도 상황상 자연스럽게 입력할 법한 행동이어야 합니다. (예: '문을 연다', '대답한다', '전화를 받는다')\n"
+        "2. **행동의 결과(result)는 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다.**\n"
+        "   - 시간적 흐름: Action(행동) -> Result(결과) -> Next Scene Start(다음 장면)\n"
+        "   - 예시: 행동 '문을 연다' -> 결과 '문이 열리자 차가운 바람이 불어왔다.' -> 다음 장면 '방 안에는 아무도 없었다...'"
     )
     
     for i in range(len(nodes) - 1):
@@ -407,9 +406,10 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         next_n.save()
         
         user_prompt = (
-            f"현재 장면 요약: {curr.content[-300:]}\n"
-            f"다음 장면 요약: {next_n.content[:300]}\n\n"
-            "출력 JSON: {'action': '유저가 채팅으로 입력할 법한 자연스러운 행동', 'result': '행동의 결과(다음 장면 도입부)'}"
+            f"현재 장면(마지막 부분): ...{curr.content[-300:]}\n"
+            f"다음 장면(시작 부분): {next_n.content[:300]}...\n\n"
+            "위 두 장면을 연결하는 Action과 Result를 생성하세요.\n"
+            "출력 JSON: {'action': '유저가 입력할 행동', 'result': '행동의 결과 (다음 장면 도입부로 자연스럽게 연결)'}"
         )
         
         res = call_llm(sys_prompt, user_prompt, json_format=True)
@@ -436,9 +436,7 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
             except: pass
 
 def _find_twist_point_index(nodes):
-    # [수정] 노드가 적을 경우에 대한 안전장치 추가
     if len(nodes) < 4:
-        # 노드가 1개라면 0번 인덱스, 2개 이상이라면 1번 인덱스를 반환
         return 0 if len(nodes) < 2 else 1
 
     summaries = [f"Idx {i}: {n.content[:50]}..." for i, n in enumerate(nodes[:-2])]
@@ -446,26 +444,40 @@ def _find_twist_point_index(nodes):
     idx = res.get('index', 2)
     return max(1, min(idx, len(nodes)-3))
 
-def _generate_twisted_synopsis_data(story, acc_content, phase, p_name, p_desc):
-    sys_prompt = "반전(Twist) 시놉시스 생성. 2000자 이상."
-    user_prompt = f"현재까지: {acc_content[-1000:]}\n주인공: {p_name}\n단계: {phase} 이후 변주"
+def _generate_twisted_synopsis_data(story, acc_content, phase, characters_info_json):
+    # [수정] 전체 캐릭터 정보를 반영하고 확실한 결말을 요구
+    sys_prompt = (
+        "기존 스토리의 흐름을 비틀어 새로운 결말로 향하는 'Twist Synopsis'를 작성하세요.\n"
+        "1. 분량은 2000자 이상.\n"
+        "2. **제공된 모든 주요 등장인물의 성격과 특성을 반영하여 입체적인 변화를 주세요.**\n"
+        "3. 단순히 상황만 꼬는 것이 아니라, **확실한 결말(Closed Ending)**을 맺어야 합니다.\n"
+        "   - 열린 결말이나 흐지부지한 엔딩 금지.\n"
+        "   - 비극이든 희극이든 이야기가 완결되어야 함."
+    )
+    user_prompt = (
+        f"현재까지 진행된 이야기: {acc_content[-1000:]}\n"
+        f"현재 단계: {phase} (이 지점부터 이야기가 달라집니다)\n"
+        f"등장인물 상세 정보: {characters_info_json}\n\n"
+        "위 정보를 바탕으로 완결된 형태의 비틀린 시놉시스를 작성해주세요."
+    )
     return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
 
 def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text):
+    # [수정] 결과 연결성 강화
     sys_prompt = (
         f"현재 장면에서 이야기가 완전히 다른 방향(반전)으로 흐르기 위해, "
-        f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 하나 정의하세요.\n"
-        "이 게임은 유저가 채팅창에 직접 행동을 입력하는 방식입니다.\n"
-        f"**중요: 기존 스토리로 이어지는 정석적인 행동은 '{original_action_text}'입니다.**\n"
-        f"**반전 행동은 이 '원래 행동'과 의도나 방식이 명확히 달라야 합니다.**\n"
-        "하지만 유저가 호기심이나 반항심에 시도해볼 법한, 입력 가능한 수준의 행동(예: '거절한다', '공격한다', '무시한다')이어야 합니다."
+        f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 정의하세요.\n"
+        "1. 기존의 정석적인 행동과는 의도가 명확히 달라야 합니다.\n"
+        "2. **행동의 결과(result)는 반전된 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다.**\n"
+        "   - 시간적 흐름: Twist Action -> Result -> Twist Next Scene Start"
     )
     
     user_prompt = (
-        f"현재 장면: {node.content[-300:]}\n"
-        f"반전 장면(다음): {twist_next_node.content[:300]}\n"
-        f"참고(기존 행동): {original_action_text}\n"
-        "출력 JSON: {'action': '반전 행동', 'result': '행동의 결과'}"
+        f"현재 장면(마지막 부분): ...{node.content[-300:]}\n"
+        f"반전된 다음 장면(시작 부분): {twist_next_node.content[:300]}...\n"
+        f"참고(기존 정석 행동): '{original_action_text}'\n\n"
+        "위 두 장면을 연결하는 반전 행동(Action)과 결과(Result)를 생성하세요.\n"
+        "출력 JSON: {'action': '반전 행동', 'result': '행동의 결과 (다음 장면 도입부로 자연스럽게 연결)'}"
     )
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
