@@ -320,9 +320,9 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         result_text = res.get('result', '')
         
         # NodeChoice 모델을 사용하여 연결 정보 저장 (이름은 Choice지만 의미는 Action)
-        NodeChoice.objects.create(
+            NodeChoice.objects.create(
             current_node=curr,
-            action_text=action_text,
+            choice_text=action_text,  # [수정] action_text 변수의 값을 choice_text 컬럼에 저장
             result_text=result_text,
             next_node=next_n,
             is_twist_path=False
@@ -377,7 +377,7 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
     
     NodeChoice.objects.create(
         current_node=node,
-        action_text=action_text,
+        choice_text=action_text,      # [수정] action_text 변수의 값을 choice_text 컬럼에 저장
         result_text=result_text,
         next_node=twist_next_node,
         is_twist_path=True 

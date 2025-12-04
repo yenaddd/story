@@ -3,8 +3,8 @@ from .models import StoryNode, NodeChoice
 
 class NodeChoiceSerializer(serializers.ModelSerializer):
     next_node_id = serializers.ReadOnlyField(source='next_node.id')
-    # choice_text -> action_text 변경
-    text = serializers.CharField(source='action_text') 
+    # [수정] 소스를 다시 choice_text로 변경 (API 출력명인 'text'는 유지)
+    text = serializers.CharField(source='choice_text') 
 
     class Meta:
         model = NodeChoice

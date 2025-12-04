@@ -52,17 +52,14 @@ class StoryNode(models.Model):
         return f"Node {self.id} ({self.chapter_phase})"
 
 class NodeChoice(models.Model):
-    # '선택지'의 개념을 '다음 노드로 가기 위한 조건/행동'으로 변경
     current_node = models.ForeignKey(StoryNode, on_delete=models.CASCADE, related_name='choices')
     
-    # action_text: 다음 장면으로 넘어가기 위해 유저(주인공)가 수행해야 하는 필수 행동 (추상적 서술)
-    action_text = models.CharField(max_length=500)
+    # [수정] DB 컬럼명에 맞춰 'choice_text'로 되돌림 (의미는 '필수 행동'으로 사용)
+    choice_text = models.CharField(max_length=500)
     
-    # result_text: 행동의 결과 (다음 노드 진입부 텍스트)
     result_text = models.TextField(help_text="행동 직후 묘사")
-    
     next_node = models.ForeignKey(StoryNode, on_delete=models.SET_NULL, null=True, related_name='incoming_choices')
     is_twist_path = models.BooleanField(default=False)
 
     def __str__(self):
-        return self.action_text[:50]
+        return self.choice_text[:50]
