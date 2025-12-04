@@ -436,7 +436,11 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
             except: pass
 
 def _find_twist_point_index(nodes):
-    if len(nodes) < 4: return 1
+    # [수정] 노드가 적을 경우에 대한 안전장치 추가
+    if len(nodes) < 4:
+        # 노드가 1개라면 0번 인덱스, 2개 이상이라면 1번 인덱스를 반환
+        return 0 if len(nodes) < 2 else 1
+
     summaries = [f"Idx {i}: {n.content[:50]}..." for i, n in enumerate(nodes[:-2])]
     res = call_llm("비틀기 지점(Index) 선택", "\n".join(summaries), json_format=True)
     idx = res.get('index', 2)
