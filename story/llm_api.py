@@ -85,7 +85,7 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭 (이전 수정사항 반영)
+    # 2. 클리셰 매칭
     matched_cliche = _match_cliche(refined_setting)
     if not matched_cliche: raise ValueError("클리셰 매칭 실패")
     
@@ -93,7 +93,7 @@ def create_story_pipeline(user_world_setting):
 
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
-    # 3. 시놉시스 생성 (이전 수정사항 반영)
+    # 3. 시놉시스 생성
     print("  [Step 3] Generating Synopsis...")
     synopsis = _generate_synopsis(story, matched_cliche, protagonist_name, protagonist_info['desc'])
     story.synopsis = synopsis
@@ -188,7 +188,7 @@ def create_story_pipeline(user_world_setting):
             twist_next_node, 
             universe_id, 
             protagonist_name, 
-            original_action_text # [추가]
+            original_action_text # [추가] 기존 행동 전달
         )
 
     # 13. 새 브랜치 내부 연결
@@ -210,15 +210,10 @@ def _refine_setting_and_protagonist(raw_setting):
     return res.get('refined_setting', raw_setting), res.get('protagonist', {'name':'이안', 'desc':'평범함'})
 
 def _match_cliche(setting):
-    """
-    [수정] 설정에 가장 적합한 클리셰를 하나 선택하여 반환 (계약연애 고정 해결)
-    """
     all_cliches = Cliche.objects.select_related('genre').all()
     if not all_cliches.exists(): return None
     
     cliche_list = list(all_cliches)
-    
-    # 상세 요약을 포함해 판단력 강화
     cliche_info = "\n".join([
         f"- ID {c.id} [{c.genre.name}] {c.title}: {c.summary[:50]}..." 
         for c in cliche_list
@@ -227,33 +222,27 @@ def _match_cliche(setting):
     sys_prompt = (
         "당신은 문학 장르 분석 전문가입니다. "
         "사용자가 입력한 세계관(설정)을 분석하여, 아래 제공된 클리셰 목록 중 가장 적합한 것 하나를 선택하세요. "
-        "반드시 설정과 장르적 특성이 일치하는 것을 골라야 합니다. "
-        "응답은 오직 JSON 형식으로 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
+        "응답은 JSON 형식으로 {'cliche_id': ID숫자, 'reason': '...'} 만 반환하세요."
     )
     
     user_prompt = f"사용자 설정: {setting}\n\n[선택 가능한 클리셰 목록]\n{cliche_info}"
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
-    
     try:
         selected_id = res.get('cliche_id')
-        if not selected_id: raise ValueError("LLM returned no ID")
-        print(f"  [Cliche Match] Selected ID: {selected_id} (Reason: {res.get('reason')})")
+        if not selected_id: raise ValueError("No ID returned")
+        print(f"  [Cliche Match] Selected ID: {selected_id}")
         return Cliche.objects.get(id=selected_id)
-    except Exception as e:
-        print(f"  [Cliche Match Error] {e} -> Fallback to random")
+    except:
+        print("  [Cliche Match] Fallback to random")
         return random.choice(all_cliches)
 
 def _generate_synopsis(story, cliche, p_name, p_desc):
-    """
-    [수정] 클리셰의 상세 내용(요약, 구조 가이드)을 반영하여 시놉시스 생성
-    """
     sys_prompt = (
         "당신은 베스트셀러 웹소설 작가입니다. "
         "주어진 세계관 설정과 **지정된 필수 클리셰**를 완벽하게 조합하여 매력적인 시놉시스를 작성하세요.\n"
-        "다음 조건을 만족해야 합니다:\n"
-        "1. 분량은 2000자 이상으로 풍성하게 작성할 것.\n"
-        "2. 기승전결 구조를 갖추고, 주인공의 내면 변화와 갈등을 깊이 있게 묘사할 것.\n"
+        "1. 분량은 2000자 이상.\n"
+        "2. 기승전결 구조와 주인공의 내면 변화 포함.\n"
         "3. **선택된 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.**"
     )
     
@@ -261,7 +250,7 @@ def _generate_synopsis(story, cliche, p_name, p_desc):
         f"제목: {cliche.title}\n"
         f"장르: {cliche.genre.name}\n"
         f"핵심 요약: {cliche.summary}\n"
-        f"전개 가이드(참고): {cliche.structure_guide}"
+        f"전개 가이드: {cliche.structure_guide}"
     )
     
     user_prompt = (
@@ -292,14 +281,7 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     
     sys_prompt = (
         f"당신은 인터랙티브 스토리 작가입니다. 주인공 '{protagonist_name}'의 시점에서 장면(Node)들을 생성하세요.\n"
-        "각 장면은 다음 정보를 포함해야 합니다:\n"
-        "1. title: 장면 제목\n"
-        "2. description: 장면 줄거리 (500자 이상)\n"
-        "3. setting: 장면 배경 설명\n"
-        "4. purpose: 장면의 목적\n"
-        "5. characters_list: 이 장면에 등장하는 인물 이름 리스트\n"
-        "6. character_states: {이름: {감정:..., 생각:..., 관계:..., 고민:...}} 형태의 상태 정보\n"
-        "7. character_changes: {이름: 전 장면 대비 변화 내용} 형태의 정보\n"
+        "각 장면은 title, description(500자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다."
     )
     user_prompt = f"시놉시스: {synopsis}\n개수: {needed_nodes}개\nJSON 형식: {{'scenes': [...]}}"
     
@@ -338,11 +320,14 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     return nodes
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
+    """
+    [수정] 유저가 채팅으로 입력할 법한 자연스러운 '조건 행동' 생성
+    """
     sys_prompt = (
-       f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 수행해야 할 "
-        "**단 하나의 필수적인 행동(Condition Action)**을 정의하세요.\n"
-        "행동은 구체적인 대사나 지문보다는, '무엇을 한다', '어디로 간다'처럼 추상적인 지시문이어야 합니다.\n"
-        "단, 미래를 모르는 사람이어도 자연스럽게 할 법한 행동이어야 합니다. 행동이 너무 구체적이어선 안되며, 자연스럽게 일어날 법한 행동이어야 합니다. " 
+       f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 취해야 할 **가장 자연스럽고 일상적인 행동(Condition Action)**을 정의하세요.\n"
+        "이 게임은 유저가 선택지를 고르는 것이 아니라, 채팅창에 직접 행동을 입력하는 방식입니다.\n"
+        "따라서 유저가 **별도의 힌트 없이도 상황상 자연스럽게 입력할 법한 행동**(예: '문을 연다', '대답한다', '전화를 받는다')이어야 합니다.\n"
+        "너무 구체적이거나 맞추기 어려운 행동은 피하고, 다음 스토리로 자연스럽게 흘러가는 연결 고리 역할을 해야 합니다." 
     )
     
     for i in range(len(nodes) - 1):
@@ -354,9 +339,9 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         next_n.save()
         
         user_prompt = (
-            f"현재 장면 요약: {curr.content[-200:]}\n"
-            f"다음 장면 요약: {next_n.content[:200]}\n\n"
-            "출력 JSON: {'action': '주인공이 해야 할 행동', 'result': '행동의 결과(다음 장면 도입부)'}"
+            f"현재 장면 요약: {curr.content[-300:]}\n"
+            f"다음 장면 요약: {next_n.content[:300]}\n\n"
+            "출력 JSON: {'action': '유저가 채팅으로 입력할 법한 자연스러운 행동', 'result': '행동의 결과(다음 장면 도입부)'}"
         )
         
         res = call_llm(sys_prompt, user_prompt, json_format=True)
@@ -396,20 +381,20 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, p_name, p_desc):
 
 def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text):
     """
-    [수정] original_action_text를 인자로 받아, 기존 행동과 명확히 구분되는 반전 행동을 생성하도록 지시
+    [수정] 기존 행동(original_action_text)과 명확히 구분되는 반전 행동 생성
     """
     sys_prompt = (
         f"현재 장면에서 이야기가 완전히 다른 방향(반전)으로 흐르기 위해, "
         f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 하나 정의하세요.\n"
-        "행동이 너무 구체적이어선 안되며, 자연스럽게 일어날 법한 행동이어야 합니다.\n\n"
-        f"**중요: 기존 스토리로 이어지는 원래 행동은 '{original_action_text}'입니다.**\n"
-        f"**반전 행동은 이 '원래 행동'과 의도나 방식이 명확히 달라야 합니다.** "
-        "두 행동을 동시에 보았을 때 유저가 서로 다른 선택지임을 확실히 인지할 수 있도록 구분지어 주세요."
+        "이 게임은 유저가 채팅창에 직접 행동을 입력하는 방식입니다.\n"
+        f"**중요: 기존 스토리로 이어지는 정석적인 행동은 '{original_action_text}'입니다.**\n"
+        f"**반전 행동은 이 '원래 행동'과 의도나 방식이 명확히 달라야 합니다.**\n"
+        "하지만 유저가 호기심이나 반항심에 시도해볼 법한, 입력 가능한 수준의 행동(예: '거절한다', '공격한다', '무시한다')이어야 합니다."
     )
     
     user_prompt = (
-        f"현재 장면: {node.content[-200:]}\n"
-        f"반전 장면(다음): {twist_next_node.content[:200]}\n"
+        f"현재 장면: {node.content[-300:]}\n"
+        f"반전 장면(다음): {twist_next_node.content[:300]}\n"
         f"참고(기존 행동): {original_action_text}\n"
         "출력 JSON: {'action': '반전 행동', 'result': '행동의 결과'}"
     )
