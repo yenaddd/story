@@ -5,31 +5,55 @@
     <title>DeepSeek Story Game</title>
     <style>
         body { font-family: 'Inter', sans-serif; max-width: 800px; margin: 0 auto; padding: 40px; background: #f8fafc; color: #334155; }
-        .story-box { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); white-space: pre-wrap; line-height: 1.8; font-size: 1.1em; }
-        .btn-choice { display: block; width: 100%; padding: 15px; margin-top: 15px; background: #4f46e5; color: white; border: none; border-radius: 8px; cursor: pointer; text-align: left; font-size: 1em; transition: 0.2s; }
-        .btn-choice:hover { background: #4338ca; }
-        .btn-twist { background: #dc2626; } /* 반전 선택지 강조 */
+        .story-box { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); white-space: pre-wrap; line-height: 1.8; font-size: 1.1em; margin-bottom: 30px;}
+        
+        .action-area { text-align: center; }
+        .action-label { font-weight: bold; color: #64748b; margin-bottom: 10px; display: block; }
+        
+        .btn-action { 
+            display: block; 
+            width: 100%; 
+            padding: 18px; 
+            margin-top: 15px; 
+            background: #2563eb; 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            text-align: center; 
+            font-size: 1.1em; 
+            font-weight: 600;
+            transition: 0.2s; 
+            box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2);
+        }
+        .btn-action:hover { background: #1d4ed8; transform: translateY(-2px); }
+        
+        /* 반전(Twist) 행동 버튼 스타일 (붉은 계열) */
+        .btn-twist { background: #dc2626; box-shadow: 0 4px 6px rgba(220, 38, 38, 0.2); }
         .btn-twist:hover { background: #b91c1c; }
     </style>
 </head>
 <body>
-    <h1>📖 인터랙티브 스토리</h1>
+    <h1>📖 인터랙티브 스토리 체험</h1>
     <div id="story-content" class="story-box">로딩 중...</div>
-    <div id="choices-area"></div>
+    
+    <div class="action-area">
+        <span id="action-guide" class="action-label">다음 장면으로 진행하려면 아래 행동을 수행하세요:</span>
+        <div id="choices-area"></div>
+    </div>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         let currentNodeId = urlParams.get('node_id') || 1;
-        let prevChoiceId = null; // 사용자가 직전에 누른 선택지 ID
 
         async function loadNode(nodeId, choiceId = null) {
             const contentDiv = document.getElementById('story-content');
             const choicesDiv = document.getElementById('choices-area');
+            const guideSpan = document.getElementById('action-guide');
             
-            contentDiv.textContent = "이야기를 불러오는 중...";
-            choicesDiv.innerHTML = "";
-
-            // API 호출 시 이전 선택지 ID를 함께 전송
+            contentDiv.style.opacity = 0.5; // 로딩 중 효과
+            
+            // API 호출 시 이전 선택지(행동) ID를 함께 전송하여 결과 텍스트를 받음
             let url = `/story/api/node/${nodeId}/`;
             if (choiceId) {
                 url += `?prev_choice=${choiceId}`;
@@ -40,17 +64,24 @@
                 if(!res.ok) throw new Error("로드 실패");
                 const data = await res.json();
 
-                // 내용 표시 (서버에서 이미 result_text를 합쳐서 보냄)
+                contentDiv.style.opacity = 1;
                 contentDiv.textContent = data.story_text;
 
-                // 선택지 표시
+                choicesDiv.innerHTML = "";
+                
                 if (data.choices.length === 0) {
-                    choicesDiv.innerHTML = "<p style='text-align:center; font-weight:bold;'>THE END</p>";
+                    guideSpan.style.display = 'none';
+                    choicesDiv.innerHTML = "<p style='font-weight:bold; color:#059669;'>🎉 이야기가 종료되었습니다.</p>";
                 } else {
+                    guideSpan.style.display = 'block';
                     data.choices.forEach(c => {
                         const btn = document.createElement('button');
-                        btn.className = c.is_twist ? 'btn-choice btn-twist' : 'btn-choice';
-                        btn.textContent = `👉 ${c.text}`;
+                        // is_twist 여부에 따라 스타일 다르게 적용 (반전 루트 vs 일반 루트)
+                        btn.className = c.is_twist ? 'btn-action btn-twist' : 'btn-action';
+                        
+                        // "행동: ~하기" 형태로 텍스트 표시
+                        btn.textContent = `🏃 [필수 행동] ${c.text}`;
+                        
                         btn.onclick = () => loadNode(c.next_node_id, c.id);
                         choicesDiv.appendChild(btn);
                     });

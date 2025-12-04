@@ -3,16 +3,16 @@ from .models import StoryNode, NodeChoice
 
 class NodeChoiceSerializer(serializers.ModelSerializer):
     next_node_id = serializers.ReadOnlyField(source='next_node.id')
+    # choice_text -> action_text 변경
+    text = serializers.CharField(source='action_text') 
 
     class Meta:
         model = NodeChoice
-        fields = ('id', 'choice_text', 'next_node_id')
+        fields = ('id', 'text', 'next_node_id', 'is_twist_path')
 
 class StoryNodeSerializer(serializers.ModelSerializer):
     choices = NodeChoiceSerializer(many=True, read_only=True)
 
     class Meta:
         model = StoryNode
-        fields = ('id', 'depth', 'freytag_stage', 'story_text', 'critique_score', 
-                  'current_relationships', 'protagonist_state', 'choices',
-                  'parent_node_id', 'parent_choice_text') # <--- 필드 추가
+        fields = ('id', 'chapter_phase', 'content', 'choices')
