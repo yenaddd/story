@@ -26,19 +26,6 @@ GENRE_DESCRIPTIONS = {
     """
 }
 
-# 3. [핵심] 시딩 스크립트에서 사용하기 편하도록 맵핑
-# 키 값은 GENRE_DESCRIPTIONS의 키와 정확히 일치해야 합니다.
-CLICHE_DATA_MAP = {
-    "추리/미스터리": CLICHE_mystery,
-    "로맨스": CLICHE_romance,
-    "SF": CLICHE_SF,
-    "판타지": CLICHE_fantasy,
-    "무협": CLICHE_action, # 무협 데이터 연결
-    "스릴러": CLICHE_thriller,
-    "호러": CLICHE_horror
-}
-
-
 CLICHE_mystery = [
     # ---------------------------------------------------------
     # [추리/미스터리]
@@ -1109,3 +1096,15 @@ CLICHE_horror = [
         """
     }
 ]
+
+# 3. [핵심] 시딩 스크립트에서 사용하기 편하도록 맵핑
+# 키 값은 GENRE_DESCRIPTIONS의 키와 정확히 일치해야 합니다.
+CLICHE_DATA_MAP = {
+    "추리/미스터리": CLICHE_mystery,
+    "로맨스": CLICHE_romance,
+    "SF": CLICHE_SF,
+    "판타지": CLICHE_fantasy,
+    "무협": CLICHE_action, # 무협 데이터 연결
+    "스릴러": CLICHE_thriller,
+    "호러": CLICHE_horror
+}
