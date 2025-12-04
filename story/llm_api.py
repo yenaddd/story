@@ -85,7 +85,7 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭
+    # 2. 클리셰 매칭 (개선됨)
     matched_cliche = _match_cliche(refined_setting)
     if not matched_cliche: raise ValueError("클리셰 매칭 실패")
     
@@ -177,18 +177,17 @@ def create_story_pipeline(user_world_setting):
     if new_branch_nodes:
         twist_next_node = new_branch_nodes[0]
         
-        # [수정] 기존(Original) 행동을 먼저 가져옵니다.
-        # _connect_linear_nodes가 이미 실행되었으므로 choice가 존재합니다.
+        # 기존(Original) 행동 가져오기
         original_choice = twist_node.choices.first()
         original_action_text = original_choice.choice_text if original_choice else "다음으로 진행"
 
-        # 분기점 노드에서 반전 노드로 가는 필수 행동 생성 (기존 행동을 인자로 전달)
+        # 분기점 노드에서 반전 노드로 가는 필수 행동 생성
         _create_twist_condition(
             twist_node, 
             twist_next_node, 
             universe_id, 
             protagonist_name, 
-            original_action_text # [추가] 기존 행동 전달
+            original_action_text
         )
 
     # 13. 새 브랜치 내부 연결
@@ -210,10 +209,17 @@ def _refine_setting_and_protagonist(raw_setting):
     return res.get('refined_setting', raw_setting), res.get('protagonist', {'name':'이안', 'desc':'평범함'})
 
 def _match_cliche(setting):
+    """
+    [수정] 목록을 셔플링하여 특정 클리셰(예: 계약연애)가 고정되는 현상 방지
+    """
     all_cliches = Cliche.objects.select_related('genre').all()
     if not all_cliches.exists(): return None
     
+    # 1. 목록 섞기 (Position Bias 제거)
     cliche_list = list(all_cliches)
+    random.shuffle(cliche_list)  # [핵심 수정] 무작위 섞기
+    
+    # 2. LLM에게 보낼 목록 생성
     cliche_info = "\n".join([
         f"- ID {c.id} [{c.genre.name}] {c.title}: {c.summary[:50]}..." 
         for c in cliche_list
@@ -222,19 +228,22 @@ def _match_cliche(setting):
     sys_prompt = (
         "당신은 문학 장르 분석 전문가입니다. "
         "사용자가 입력한 세계관(설정)을 분석하여, 아래 제공된 클리셰 목록 중 가장 적합한 것 하나를 선택하세요. "
-        "응답은 JSON 형식으로 {'cliche_id': ID숫자, 'reason': '...'} 만 반환하세요."
+        "만약 설정이 모호하거나(예: '로맨스 소설 써줘') 여러 클리셰와 어울린다면, "
+        "**목록의 순서에 얽매이지 말고 가장 흥미롭고 창의적인 전개가 가능한 클리셰를 고르세요.** "
+        "응답은 오직 JSON 형식으로 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
     )
     
-    user_prompt = f"사용자 설정: {setting}\n\n[선택 가능한 클리셰 목록]\n{cliche_info}"
+    user_prompt = f"사용자 설정: {setting}\n\n[선택 가능한 클리셰 목록 (순서 무작위)]\n{cliche_info}"
     
     res = call_llm(sys_prompt, user_prompt, json_format=True)
+    
     try:
         selected_id = res.get('cliche_id')
         if not selected_id: raise ValueError("No ID returned")
-        print(f"  [Cliche Match] Selected ID: {selected_id}")
+        print(f"  [Cliche Match] Selected ID: {selected_id} (Reason: {res.get('reason')})")
         return Cliche.objects.get(id=selected_id)
-    except:
-        print("  [Cliche Match] Fallback to random")
+    except Exception as e:
+        print(f"  [Cliche Match Error] {e} -> Fallback to random")
         return random.choice(all_cliches)
 
 def _generate_synopsis(story, cliche, p_name, p_desc):
@@ -320,9 +329,6 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     return nodes
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
-    """
-    [수정] 유저가 채팅으로 입력할 법한 자연스러운 '조건 행동' 생성
-    """
     sys_prompt = (
        f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 취해야 할 **가장 자연스럽고 일상적인 행동(Condition Action)**을 정의하세요.\n"
         "이 게임은 유저가 선택지를 고르는 것이 아니라, 채팅창에 직접 행동을 입력하는 방식입니다.\n"
@@ -380,9 +386,6 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, p_name, p_desc):
     return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
 
 def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text):
-    """
-    [수정] 기존 행동(original_action_text)과 명확히 구분되는 반전 행동 생성
-    """
     sys_prompt = (
         f"현재 장면에서 이야기가 완전히 다른 방향(반전)으로 흐르기 위해, "
         f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 하나 정의하세요.\n"
