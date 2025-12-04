@@ -85,11 +85,11 @@ def create_story_pipeline(user_world_setting):
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭 (개선됨)
+    # 2. 클리셰 매칭 (2단계 로직 적용: 장르 선정 -> 클리셰 선정)
     matched_cliche = _match_cliche(refined_setting)
     if not matched_cliche: raise ValueError("클리셰 매칭 실패")
     
-    print(f"✅ Matched Cliche: {matched_cliche.title}")
+    print(f"✅ Matched Cliche: [{matched_cliche.genre.name}] {matched_cliche.title}")
 
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
@@ -133,7 +133,7 @@ def create_story_pipeline(user_world_setting):
         link_universe_to_first_scene(universe_id, f"{universe_id}_{original_nodes[0].id}")
     except: pass
 
-    # 7. 선형 연결 (필수 행동 생성) - 기존 루트 연결
+    # 7. 선형 연결 (필수 행동 생성)
     _connect_linear_nodes(original_nodes, universe_id, protagonist_name)
 
     # 8. 비틀기(Twist) 지점 찾기
@@ -165,7 +165,7 @@ def create_story_pipeline(user_world_setting):
         )
     except: pass
     
-    # 11. 비틀기 노드(새로운 루트의 장면들) 생성
+    # 11. 비틀기 노드 생성
     new_branch_nodes = _create_nodes_from_synopsis(
         story, twisted_synopsis, protagonist_name,
         start_node_index=twist_node_index+1, 
@@ -173,15 +173,12 @@ def create_story_pipeline(user_world_setting):
         universe_id=universe_id
     )
 
-    # 12. 분기 처리 (기존 루트 vs 반전 루트)
+    # 12. 분기 처리
     if new_branch_nodes:
         twist_next_node = new_branch_nodes[0]
-        
-        # 기존(Original) 행동 가져오기
         original_choice = twist_node.choices.first()
         original_action_text = original_choice.choice_text if original_choice else "다음으로 진행"
 
-        # 분기점 노드에서 반전 노드로 가는 필수 행동 생성
         _create_twist_condition(
             twist_node, 
             twist_next_node, 
@@ -196,7 +193,89 @@ def create_story_pipeline(user_world_setting):
     return story.id
 
 # ==========================================
-# [내부 로직]
+# [내부 로직: 클리셰 매칭 개선]
+# ==========================================
+
+def _match_cliche(setting):
+    """
+    [2단계 매칭 로직]
+    1. Genre Selection: 유저 설정에 가장 적합한 장르 1개 선정
+    2. Cliche Selection: 선정된 장르 내에서 가장 적합한 클리셰 1개 선정
+    """
+    
+    # [Step 1] 장르 선정
+    all_genres = Genre.objects.all()
+    if not all_genres.exists():
+        return None
+    
+    # 장르 설명 텍스트 구성
+    genre_text_list = []
+    for g in all_genres:
+        desc = g.description if g.description else "설명 없음"
+        genre_text_list.append(f"- {g.name}: {desc}")
+    genre_prompt_text = "\n".join(genre_text_list)
+    
+    sys_prompt_1 = (
+        "당신은 장르 문학 분석가입니다. "
+        "사용자의 입력(세계관 설정)을 분석하여, 아래 제공된 장르 목록 중 이를 가장 효과적으로 표현할 수 있는 **단 하나의 장르**를 선택하세요.\n"
+        "반드시 JSON 형식 {'genre_name': '장르명', 'reason': '이유'} 으로만 응답하세요."
+    )
+    user_prompt_1 = f"사용자 설정: {setting}\n\n[장르 목록]\n{genre_prompt_text}"
+    
+    print("  [Step 2-1] Selecting Genre...")
+    res_1 = call_llm(sys_prompt_1, user_prompt_1, json_format=True)
+    selected_genre_name = res_1.get('genre_name', '판타지') # 기본값 판타지
+    
+    try:
+        selected_genre = Genre.objects.get(name=selected_genre_name)
+    except Genre.DoesNotExist:
+        # LLM이 없는 이름을 뱉었을 경우 가장 유사하거나 첫 번째 장르 선택
+        selected_genre = all_genres.first()
+        print(f"  ⚠️ Genre '{selected_genre_name}' not found. Fallback to '{selected_genre.name}'")
+
+    print(f"  -> Selected Genre: {selected_genre.name}")
+
+    # [Step 2] 클리셰 선정
+    cliches = Cliche.objects.filter(genre=selected_genre)
+    if not cliches.exists():
+        # 해당 장르에 클리셰가 없으면 전체에서 랜덤
+        return Cliche.objects.first()
+
+    # 클리셰 상세 정보 구성 (정의 및 구조)
+    cliche_text_list = []
+    for c in cliches:
+        info = (
+            f"ID: {c.id}\n"
+            f"제목: {c.title}\n"
+            f"정의: {c.summary}\n"
+            f"구조 가이드: {c.structure_guide}\n"
+        )
+        cliche_text_list.append(info)
+    cliche_prompt_text = "\n----------------\n".join(cliche_text_list)
+
+    sys_prompt_2 = (
+        f"당신은 '{selected_genre.name}' 장르 전문 편집자입니다. "
+        "사용자의 설정과 앞서 선정된 장르를 고려하여, 해당 장르 내의 클리셰 목록 중 **가장 흥미롭고 극적인 전개가 가능한 클리셰** 하나를 선택하세요.\n"
+        "각 클리셰의 정의와 구조(structure_guide)를 면밀히 분석하여 결정하세요.\n"
+        "응답은 JSON 형식 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
+    )
+    user_prompt_2 = f"사용자 설정: {setting}\n\n[선택된 장르: {selected_genre.name}]\n\n[클리셰 후보 목록]\n{cliche_prompt_text}"
+
+    print("  [Step 2-2] Selecting Cliche...")
+    res_2 = call_llm(sys_prompt_2, user_prompt_2, json_format=True)
+    
+    try:
+        selected_id = res_2.get('cliche_id')
+        if not selected_id: raise ValueError("No ID returned")
+        final_cliche = Cliche.objects.get(id=selected_id)
+        print(f"  -> Selected Cliche: {final_cliche.title} (Reason: {res_2.get('reason')})")
+        return final_cliche
+    except Exception as e:
+        print(f"  ⚠️ Cliche Selection Error: {e}. Fallback to random in genre.")
+        return random.choice(list(cliches))
+
+# ==========================================
+# [나머지 내부 로직 함수들 (기존 유지)]
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
@@ -207,44 +286,6 @@ def _refine_setting_and_protagonist(raw_setting):
     )
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     return res.get('refined_setting', raw_setting), res.get('protagonist', {'name':'이안', 'desc':'평범함'})
-
-def _match_cliche(setting):
-    """
-    [수정] 목록을 셔플링하여 특정 클리셰(예: 계약연애)가 고정되는 현상 방지
-    """
-    all_cliches = Cliche.objects.select_related('genre').all()
-    if not all_cliches.exists(): return None
-    
-    # 1. 목록 섞기 (Position Bias 제거)
-    cliche_list = list(all_cliches)
-    random.shuffle(cliche_list)  # [핵심 수정] 무작위 섞기
-    
-    # 2. LLM에게 보낼 목록 생성
-    cliche_info = "\n".join([
-        f"- ID {c.id} [{c.genre.name}] {c.title}: {c.summary[:50]}..." 
-        for c in cliche_list
-    ])
-    
-    sys_prompt = (
-        "당신은 문학 장르 분석 전문가입니다. "
-        "사용자가 입력한 세계관(설정)을 분석하여, 아래 제공된 클리셰 목록 중 가장 적합한 것 하나를 선택하세요. "
-        "만약 설정이 모호하거나(예: '로맨스 소설 써줘') 여러 클리셰와 어울린다면, "
-        "**목록의 순서에 얽매이지 말고 가장 흥미롭고 창의적인 전개가 가능한 클리셰를 고르세요.** "
-        "응답은 오직 JSON 형식으로 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
-    )
-    
-    user_prompt = f"사용자 설정: {setting}\n\n[선택 가능한 클리셰 목록 (순서 무작위)]\n{cliche_info}"
-    
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
-    
-    try:
-        selected_id = res.get('cliche_id')
-        if not selected_id: raise ValueError("No ID returned")
-        print(f"  [Cliche Match] Selected ID: {selected_id} (Reason: {res.get('reason')})")
-        return Cliche.objects.get(id=selected_id)
-    except Exception as e:
-        print(f"  [Cliche Match Error] {e} -> Fallback to random")
-        return random.choice(all_cliches)
 
 def _generate_synopsis(story, cliche, p_name, p_desc):
     sys_prompt = (
