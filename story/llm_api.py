@@ -16,14 +16,13 @@ from .neo4j_connection import (
     StoryNodeData
 )
 
-# API 설정 (기존과 동일)
+# API 설정
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=120):
-    # (기존 코드와 동일)
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
     
@@ -76,26 +75,25 @@ def create_story_pipeline(user_world_setting):
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
 
-    # 1. 설정 구체화 및 주인공 정의 (상세 정보 포함)
+    # 1. 설정 구체화 및 주인공 정의
     refined_setting, protagonist_info = _refine_setting_and_protagonist(user_world_setting)
     protagonist_name = protagonist_info['name']
     print(f"✅ Protagonist: {protagonist_name}")
 
     try:
-        # Universe 생성 (이미지 필드 빈값 포함)
         create_universe_node_neo4j(universe_id, refined_setting, protagonist_name)
     except Exception as e:
         print(f"Neo4j Error: {e}")
 
-    # 2. 클리셰 매칭 (수정됨)
+    # 2. 클리셰 매칭 (이전 수정사항 반영)
     matched_cliche = _match_cliche(refined_setting)
     if not matched_cliche: raise ValueError("클리셰 매칭 실패")
     
-    print(f"✅ Matched Cliche: {matched_cliche.title}") # 디버깅용 로그
+    print(f"✅ Matched Cliche: {matched_cliche.title}")
 
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
-    # 3. 시놉시스 생성 (수정됨)
+    # 3. 시놉시스 생성 (이전 수정사항 반영)
     print("  [Step 3] Generating Synopsis...")
     synopsis = _generate_synopsis(story, matched_cliche, protagonist_name, protagonist_info['desc'])
     story.synopsis = synopsis
@@ -104,8 +102,6 @@ def create_story_pipeline(user_world_setting):
     # 3.5 주요 인물 정보 추출 및 Universe 업데이트
     print("  [Step 3.5] Extracting Characters & Universe Details...")
     universe_details = _generate_universe_details(refined_setting, synopsis)
-    
-    # 인물 정보 통합 (주인공 + 시놉시스 등장인물)
     characters_info_json = _extract_characters_info(synopsis, protagonist_info)
     
     try:
@@ -137,10 +133,10 @@ def create_story_pipeline(user_world_setting):
         link_universe_to_first_scene(universe_id, f"{universe_id}_{original_nodes[0].id}")
     except: pass
 
-    # 7. 선형 연결 (필수 행동 생성)
+    # 7. 선형 연결 (필수 행동 생성) - 기존 루트 연결
     _connect_linear_nodes(original_nodes, universe_id, protagonist_name)
 
-    # 8. 비틀기(Twist)
+    # 8. 비틀기(Twist) 지점 찾기
     twist_node_index = _find_twist_point_index(original_nodes)
     twist_node = original_nodes[twist_node_index]
     story.twist_point_node_id = twist_node.id
@@ -160,7 +156,7 @@ def create_story_pipeline(user_world_setting):
         update_universe_details_neo4j(
             universe_id=universe_id,
             synopsis=story.synopsis,
-            twisted_synopsis=twisted_synopsis, # 업데이트
+            twisted_synopsis=twisted_synopsis,
             title=universe_details.get("title"),
             description=universe_details.get("description"),
             detail_description=universe_details.get("detail_description"),
@@ -169,7 +165,7 @@ def create_story_pipeline(user_world_setting):
         )
     except: pass
     
-    # 11. 비틀기 노드 생성
+    # 11. 비틀기 노드(새로운 루트의 장면들) 생성
     new_branch_nodes = _create_nodes_from_synopsis(
         story, twisted_synopsis, protagonist_name,
         start_node_index=twist_node_index+1, 
@@ -180,8 +176,20 @@ def create_story_pipeline(user_world_setting):
     # 12. 분기 처리 (기존 루트 vs 반전 루트)
     if new_branch_nodes:
         twist_next_node = new_branch_nodes[0]
-        # 분기점 노드에서 반전 노드로 가는 필수 행동 생성
-        _create_twist_condition(twist_node, twist_next_node, universe_id, protagonist_name)
+        
+        # [수정] 기존(Original) 행동을 먼저 가져옵니다.
+        # _connect_linear_nodes가 이미 실행되었으므로 choice가 존재합니다.
+        original_choice = twist_node.choices.first()
+        original_action_text = original_choice.choice_text if original_choice else "다음으로 진행"
+
+        # 분기점 노드에서 반전 노드로 가는 필수 행동 생성 (기존 행동을 인자로 전달)
+        _create_twist_condition(
+            twist_node, 
+            twist_next_node, 
+            universe_id, 
+            protagonist_name, 
+            original_action_text # [추가]
+        )
 
     # 13. 새 브랜치 내부 연결
     _connect_linear_nodes(new_branch_nodes, universe_id, protagonist_name)
@@ -189,7 +197,7 @@ def create_story_pipeline(user_world_setting):
     return story.id
 
 # ==========================================
-# [내부 로직 수정]
+# [내부 로직]
 # ==========================================
 
 def _refine_setting_and_protagonist(raw_setting):
@@ -203,15 +211,14 @@ def _refine_setting_and_protagonist(raw_setting):
 
 def _match_cliche(setting):
     """
-    [수정] 설정에 가장 적합한 클리셰를 하나 선택하여 반환
+    [수정] 설정에 가장 적합한 클리셰를 하나 선택하여 반환 (계약연애 고정 해결)
     """
     all_cliches = Cliche.objects.select_related('genre').all()
     if not all_cliches.exists(): return None
     
-    # 1. 목록 준비 (전체 목록)
     cliche_list = list(all_cliches)
     
-    # 2. 프롬프트 강화: 제목뿐만 아니라 요약(summary) 일부를 포함하여 판단력 향상
+    # 상세 요약을 포함해 판단력 강화
     cliche_info = "\n".join([
         f"- ID {c.id} [{c.genre.name}] {c.title}: {c.summary[:50]}..." 
         for c in cliche_list
@@ -230,12 +237,9 @@ def _match_cliche(setting):
     
     try:
         selected_id = res.get('cliche_id')
-        if not selected_id:
-            raise ValueError("LLM returned no ID")
-        
+        if not selected_id: raise ValueError("LLM returned no ID")
         print(f"  [Cliche Match] Selected ID: {selected_id} (Reason: {res.get('reason')})")
         return Cliche.objects.get(id=selected_id)
-        
     except Exception as e:
         print(f"  [Cliche Match Error] {e} -> Fallback to random")
         return random.choice(all_cliches)
@@ -250,10 +254,9 @@ def _generate_synopsis(story, cliche, p_name, p_desc):
         "다음 조건을 만족해야 합니다:\n"
         "1. 분량은 2000자 이상으로 풍성하게 작성할 것.\n"
         "2. 기승전결 구조를 갖추고, 주인공의 내면 변화와 갈등을 깊이 있게 묘사할 것.\n"
-        "3. **선택된 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.** (다른 장르의 요소가 섞이지 않도록 주의)"
+        "3. **선택된 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.**"
     )
     
-    # 클리셰 상세 정보 포함
     cliche_detail = (
         f"제목: {cliche.title}\n"
         f"장르: {cliche.genre.name}\n"
@@ -339,7 +342,7 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
        f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 수행해야 할 "
         "**단 하나의 필수적인 행동(Condition Action)**을 정의하세요.\n"
         "행동은 구체적인 대사나 지문보다는, '무엇을 한다', '어디로 간다'처럼 추상적인 지시문이어야 합니다.\n"
-        "단, 미래를 모르는 사람이어도 자연스럽게 할 법한 행동이어야 합니다. 행동이 너무 구체적이어선 안되며, 자연스럽게 일어날 법한 행동이어야 합니다. 그리고 그 행동은 다음 노드로 진행되기 위한 자연스러운 연결 행위여야 합니다." 
+        "단, 미래를 모르는 사람이어도 자연스럽게 할 법한 행동이어야 합니다. 행동이 너무 구체적이어선 안되며, 자연스럽게 일어날 법한 행동이어야 합니다. " 
     )
     
     for i in range(len(nodes) - 1):
@@ -351,8 +354,8 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         next_n.save()
         
         user_prompt = (
-            f"현재 장면 요약: {curr.content}\n"
-            f"다음 장면 요약: {next_n.content}\n\n"
+            f"현재 장면 요약: {curr.content[-200:]}\n"
+            f"다음 장면 요약: {next_n.content[:200]}\n\n"
             "출력 JSON: {'action': '주인공이 해야 할 행동', 'result': '행동의 결과(다음 장면 도입부)'}"
         )
         
@@ -391,17 +394,23 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, p_name, p_desc):
     user_prompt = f"현재까지: {acc_content[-1000:]}\n주인공: {p_name}\n단계: {phase} 이후 변주"
     return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
 
-def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name):
+def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text):
+    """
+    [수정] original_action_text를 인자로 받아, 기존 행동과 명확히 구분되는 반전 행동을 생성하도록 지시
+    """
     sys_prompt = (
         f"현재 장면에서 이야기가 완전히 다른 방향(반전)으로 흐르기 위해, "
-        f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동**을 하나 정의하세요.\n"
-        "이 행동을 하면 기존 스토리와 다른 '반전 루트'로 진입합니다."
-        "단, 행동이 너무 구체적이어선 안되며, 자연스럽게 일어날 법한 행동이어야 합니다. 그리고 그 행동은 다음 노드로 진행되기 위한 자연스러운 연결 행위여야 합니다." 
+        f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 하나 정의하세요.\n"
+        "행동이 너무 구체적이어선 안되며, 자연스럽게 일어날 법한 행동이어야 합니다.\n\n"
+        f"**중요: 기존 스토리로 이어지는 원래 행동은 '{original_action_text}'입니다.**\n"
+        f"**반전 행동은 이 '원래 행동'과 의도나 방식이 명확히 달라야 합니다.** "
+        "두 행동을 동시에 보았을 때 유저가 서로 다른 선택지임을 확실히 인지할 수 있도록 구분지어 주세요."
     )
     
     user_prompt = (
         f"현재 장면: {node.content[-200:]}\n"
         f"반전 장면(다음): {twist_next_node.content[:200]}\n"
+        f"참고(기존 행동): {original_action_text}\n"
         "출력 JSON: {'action': '반전 행동', 'result': '행동의 결과'}"
     )
     
