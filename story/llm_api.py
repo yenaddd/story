@@ -199,20 +199,24 @@ def create_story_pipeline(user_world_setting):
 def _match_cliche(setting):
     """
     [2단계 매칭 로직]
-    1. Genre Selection: 유저 설정에 가장 적합한 장르 1개 선정
-    2. Cliche Selection: 선정된 장르 내에서 가장 적합한 클리셰 1개 선정
+    Step 1. 사용자 설정(setting)과 DB의 '장르 설명'을 비교 -> 최적 장르 1개 선정
+    Step 2. 선정된 장르에 속한 클리셰들만 DB에서 로드 -> 최적 클리셰 1개 선정
     """
     
-    # [Step 1] 장르 선정
+    # ---------------------------------------------------------
+    # [Step 1] 장르 선정 (Genre Selection)
+    # ---------------------------------------------------------
     all_genres = Genre.objects.all()
     if not all_genres.exists():
+        print("⚠️ DB에 장르 데이터가 없습니다.")
         return None
     
     # 장르 설명 텍스트 구성
     genre_text_list = []
     for g in all_genres:
         desc = g.description if g.description else "설명 없음"
-        genre_text_list.append(f"- {g.name}: {desc}")
+        genre_text_list.append(f"- [{g.name}]: {desc}")
+    
     genre_prompt_text = "\n".join(genre_text_list)
     
     sys_prompt_1 = (
@@ -220,28 +224,36 @@ def _match_cliche(setting):
         "사용자의 입력(세계관 설정)을 분석하여, 아래 제공된 장르 목록 중 이를 가장 효과적으로 표현할 수 있는 **단 하나의 장르**를 선택하세요.\n"
         "반드시 JSON 형식 {'genre_name': '장르명', 'reason': '이유'} 으로만 응답하세요."
     )
+    
     user_prompt_1 = f"사용자 설정: {setting}\n\n[장르 목록]\n{genre_prompt_text}"
     
-    print("  [Step 2-1] Selecting Genre...")
+    print("  [Step 1] Selecting Genre...")
     res_1 = call_llm(sys_prompt_1, user_prompt_1, json_format=True)
-    selected_genre_name = res_1.get('genre_name', '판타지') # 기본값 판타지
+    selected_genre_name = res_1.get('genre_name', '판타지') # 기본값
     
     try:
+        # LLM이 선택한 장르를 DB에서 가져옴
         selected_genre = Genre.objects.get(name=selected_genre_name)
     except Genre.DoesNotExist:
-        # LLM이 없는 이름을 뱉었을 경우 가장 유사하거나 첫 번째 장르 선택
+        # 혹시 LLM이 없는 이름을 반환하면 첫 번째 장르로 fallback
         selected_genre = all_genres.first()
         print(f"  ⚠️ Genre '{selected_genre_name}' not found. Fallback to '{selected_genre.name}'")
 
     print(f"  -> Selected Genre: {selected_genre.name}")
 
-    # [Step 2] 클리셰 선정
+
+    # ---------------------------------------------------------
+    # [Step 2] 클리셰 선정 (Cliche Selection)
+    # ---------------------------------------------------------
+    # ★ 핵심: 선택된 장르에 해당하는 클리셰만 DB에서 필터링해서 가져옴
     cliches = Cliche.objects.filter(genre=selected_genre)
+    
     if not cliches.exists():
-        # 해당 장르에 클리셰가 없으면 전체에서 랜덤
+        # 해당 장르에 클리셰가 없으면 전체 중 아무거나 하나 리턴 (안전장치)
+        print("  ⚠️ No cliches found for this genre.")
         return Cliche.objects.first()
 
-    # 클리셰 상세 정보 구성 (정의 및 구조)
+    # LLM에게 보낼 프롬프트 구성 (해당 장르의 클리셰 리스트만 포함)
     cliche_text_list = []
     for c in cliches:
         info = (
@@ -251,27 +263,36 @@ def _match_cliche(setting):
             f"구조 가이드: {c.structure_guide}\n"
         )
         cliche_text_list.append(info)
+    
     cliche_prompt_text = "\n----------------\n".join(cliche_text_list)
 
     sys_prompt_2 = (
         f"당신은 '{selected_genre.name}' 장르 전문 편집자입니다. "
         "사용자의 설정과 앞서 선정된 장르를 고려하여, 해당 장르 내의 클리셰 목록 중 **가장 흥미롭고 극적인 전개가 가능한 클리셰** 하나를 선택하세요.\n"
-        "각 클리셰의 정의와 구조(structure_guide)를 면밀히 분석하여 결정하세요.\n"
+        "각 클리셰의 '정의'와 '구조 가이드'를 면밀히 분석하여 결정하세요.\n"
         "응답은 JSON 형식 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
     )
-    user_prompt_2 = f"사용자 설정: {setting}\n\n[선택된 장르: {selected_genre.name}]\n\n[클리셰 후보 목록]\n{cliche_prompt_text}"
+    
+    user_prompt_2 = (
+        f"사용자 설정: {setting}\n\n"
+        f"[선택된 장르: {selected_genre.name}]\n\n"
+        f"[클리셰 후보 목록]\n{cliche_prompt_text}"
+    )
 
-    print("  [Step 2-2] Selecting Cliche...")
+    print("  [Step 2] Selecting Cliche...")
     res_2 = call_llm(sys_prompt_2, user_prompt_2, json_format=True)
     
     try:
         selected_id = res_2.get('cliche_id')
         if not selected_id: raise ValueError("No ID returned")
+        
         final_cliche = Cliche.objects.get(id=selected_id)
         print(f"  -> Selected Cliche: {final_cliche.title} (Reason: {res_2.get('reason')})")
         return final_cliche
+        
     except Exception as e:
         print(f"  ⚠️ Cliche Selection Error: {e}. Fallback to random in genre.")
+        # 실패 시 해당 장르 내에서 랜덤 선택
         return random.choice(list(cliches))
 
 # ==========================================
