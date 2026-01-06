@@ -371,6 +371,10 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
             chapter_phase=phase_name, 
             content=scene_data.get('description', '')
         )
+
+        changes_json = json.dumps(scene_data.get('character_changes', {}), ensure_ascii=False)
+        node.temp_character_changes = changes_json
+
         nodes.append(node)
         
         if universe_id:
@@ -384,7 +388,6 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
                     purpose=scene_data.get('purpose', ''),
                     characters_list=scene_data.get('characters_list', []),
                     character_states=json.dumps(scene_data.get('character_states', {}), ensure_ascii=False),
-                    character_changes=json.dumps(scene_data.get('character_changes', {}), ensure_ascii=False),
                     depth=current_idx
                 )
                 sync_node_to_neo4j(neo4j_data)
@@ -431,12 +434,14 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         
         if universe_id:
             try:
+                next_changes = getattr(next_n, 'temp_character_changes', "{}")
                 sync_action_to_neo4j(
                     f"{universe_id}_{curr.id}", 
                     f"{universe_id}_{next_n.id}", 
                     action_text, 
                     result_text, 
-                    is_twist=False
+                    is_twist=False,
+                    character_changes=next_changes
                 )
             except: pass
 
@@ -499,12 +504,14 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
     
     if universe_id:
         try:
+            twist_changes = getattr(twist_next_node, 'temp_character_changes', "{}")
             sync_action_to_neo4j(
                 f"{universe_id}_{node.id}", 
                 f"{universe_id}_{twist_next_node.id}", 
                 action_text, 
                 result_text, 
-                is_twist=True
+                is_twist=True,
+                character_changes=twist_changes
             )
         except: pass
 

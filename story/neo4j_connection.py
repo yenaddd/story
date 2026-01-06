@@ -41,6 +41,7 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
     ON CREATE SET 
         u.setting = $world_setting,
         u.protagonist_name = $protagonist_name,
+        u.experimental = false,
         u.image_url = "",  // 이미지 링크 빈 필드
         u.created_at = timestamp()
     ON MATCH SET 
@@ -98,7 +99,6 @@ class StoryNodeData:
     # 등장인물 관련
     characters_list: list # 등장인물 리스트
     character_states: str # 등장인물 상태 (감정, 생각, 관계 등) JSON string
-    character_changes: str # 전 노드 대비 변화 JSON string
     
     depth: int = 0        # 장면 깊이
 
@@ -117,14 +117,12 @@ def sync_node_to_neo4j(data: StoryNodeData):
         n.purpose = $props.purpose,
         n.characters = $props.characters_list,
         n.character_states = $props.character_states,
-        n.character_changes = $props.character_changes,
         n.depth = $props.depth,
         n.created_at = timestamp()
     ON MATCH SET 
         n.title = $props.title,
         n.description = $props.description,
         n.character_states = $props.character_states,
-        n.character_changes = $props.character_changes
     """
     run_cypher(query, {"props": props})
 
@@ -140,7 +138,7 @@ def link_universe_to_first_scene(universe_id: str, first_node_id: str):
     """
     run_cypher(query, {"universe_id": universe_id, "node_id": first_node_id})
 
-def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False):
+def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}"):
     """
     Scene 간의 연결은 '필수 행동(REQUIRED_ACTION)'으로 정의
     """
@@ -150,10 +148,13 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
     MATCH (next:Scene {{node_id: $next_id}})
     MERGE (curr)-[r:{rel_type} {{action_text: $action_text}}]->(next)
     SET r.result_text = $result_text
+        r.character_changes = $character_changes
     """
     run_cypher(query, {
         "curr_id": curr_id, 
         "next_id": next_id, 
         "action_text": action_text, 
-        "result_text": result_text
+        "result_text": result_text,
+        "character_changes": character_changes # 전 노드 대비 변화 JSON string
+
     })
