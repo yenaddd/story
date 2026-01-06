@@ -340,7 +340,12 @@ def _extract_characters_info(synopsis, protagonist_info):
     return json.dumps(chars, ensure_ascii=False)
 
 def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_index=0, is_twist_branch=False, universe_id=None):
-    needed_nodes = 12 - start_node_index
+    NODES_PER_PHASE = 3  
+    TOTAL_NODES = NODES_PER_PHASE * 4  # 예: 5 * 4 = 20개
+
+    # 총 생성 개수 계산
+    needed_nodes = TOTAL_NODES - start_node_index
+
     phases = ["발단", "전개", "절정", "결말"]
     
     sys_prompt = (
@@ -359,7 +364,7 @@ def _create_nodes_from_synopsis(story, synopsis, protagonist_name, start_node_in
     nodes = []
     for i, scene_data in enumerate(scenes):
         current_idx = start_node_index + i
-        phase_name = phases[min(current_idx // 3, 3)]
+        phase_name = phases[min(current_idx // NODES_PER_PHASE, 3)]
         
         node = StoryNode.objects.create(
             story=story, 
@@ -391,8 +396,8 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
     # [수정] 자연스러운 연결을 위한 프롬프트 강화
     sys_prompt = (
         f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 취해야 할 **자연스럽고 일상적인 행동(Condition Action)**을 정의하세요.\n"
-        "1. 유저가 별도의 힌트 없이도 상황상 자연스럽게 입력할 법한 행동이어야 합니다. (예: '문을 연다', '대답한다', '전화를 받는다')\n"
-        "2. **행동의 결과(result)는 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다.**\n"
+        "1. 유저가 별도의 힌트 없이도 상황상 자연스럽게 입력할 법한 행동이어야 합니다. (예: '문을 연다', '대답한다', '전화를 받는다') 행위가 구체적이면 안됩니다. 아주 일상적인 행동이어야 합니다. 마치 방탈출을 하는 게임 플레이어처럼 유저가 할 수 있을 법한 행동을 조건 행위로 지정해야 합니다.\n"
+        "2. **조건 행동의 결과(result)는 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다.**\n"
         "   - 시간적 흐름: Action(행동) -> Result(결과) -> Next Scene Start(다음 장면)\n"
         "   - 예시: 행동 '문을 연다' -> 결과 '문이 열리자 차가운 바람이 불어왔다.' -> 다음 장면 '방 안에는 아무도 없었다...'"
     )
