@@ -285,11 +285,13 @@ def _select_twist_point_from_candidates(candidates):
         selected_id = res.get('node_id')
         if selected_id and selected_id in node_map:
             return node_map[selected_id]
-    except:
+    except Exception as e:
+        print(f"      ⚠️ Twist Point Selection Error: {e}")
         pass
     
-    # 실패 시 랜덤 선택
-    return random.choice(list(node_map.values()))
+    # [수정] 실패 시 억지로 랜덤 선택하지 않고 None 반환 (분기 생성 안 함)
+    print("      ⚠️ No valid twist point selected by AI. Skipping branch generation.")
+    return None
 
 def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, universe_id=None, is_twist_branch=False):
     """
