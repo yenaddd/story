@@ -1,14 +1,13 @@
 """
 Django settings for config project.
-... (기존 주석 생략)
 """
 
 from pathlib import Path
 import os # os 모듈 추가
 from dotenv import load_dotenv # python-dotenv 모듈 추가
 
-# Load environment variables from .env file
-load_dotenv() # 프로젝트 시작 시 .env 파일의 내용을 환경 변수로 로드
+# .env 파일 로드
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -17,8 +16,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-f(r5#*5g7_&!pi31ny8qql$xc+8krpy93q0_uz#5*!t0-#kk=0' # 기존 값 유지
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -120,3 +118,11 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+NEO4J_URI = os.environ.get("NEO4J_URI", "")
+NEO4J_USER = os.environ.get("NEO4J_USER", "")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")
+
+# Neo4j 사용 여부 플래그 (문자열 'True'일 때만 켜짐)
+# 친구분 컴퓨터에서는 이 값이 False가 되어 전송이 차단됩니다.
+USE_NEO4J = os.environ.get("USE_NEO4J", "False").lower() == "true"

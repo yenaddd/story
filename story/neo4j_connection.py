@@ -1,17 +1,30 @@
 from neo4j import GraphDatabase
 import json
 from dataclasses import dataclass, asdict
+from django.conf import settings
 
 # Neo4j 연결 설정
-URI = "neo4j+ssc://32adcd36.databases.neo4j.io"
-AUTH = ("neo4j", "sKyJKxvWChIunry20Sk2cA-Wi-d-0oZH75LWcZz6zUg")
+URI = settings.NEO4J_URI
+AUTH = (settings.NEO4J_USER, settings.NEO4J_PASSWORD)
 
 _DRIVER = None
 
 def get_driver():
     global _DRIVER
+    # [추가] 사용 설정(USE_NEO4J)이 꺼져 있으면 드라이버를 생성하지 않음
+    if not settings.USE_NEO4J:
+        return None
+
     if _DRIVER is None:
-        _DRIVER = GraphDatabase.driver(URI, auth=AUTH)
+        try:
+            # 필수 정보가 없으면 연결 시도 안 함
+            if not URI or not settings.NEO4J_USER or not settings.NEO4J_PASSWORD:
+                return None
+                
+            _DRIVER = GraphDatabase.driver(URI, auth=AUTH)
+        except Exception as e:
+            print(f"⚠️ [Neo4j Connection Error] {e}")
+            return None
     return _DRIVER
 
 def close_driver():
@@ -21,9 +34,16 @@ def close_driver():
         _DRIVER = None
 
 def run_cypher(query: str, params: dict = None):
+    # [핵심] 친구 컴퓨터(USE_NEO4J=False)에서는 여기서 바로 함수가 종료됩니다.
+    if not settings.USE_NEO4J:
+        return
+
     if params is None: params = {}
     try:
-        driver = get_driver() 
+        driver = get_driver()
+        if driver is None:
+            return 
+            
         with driver.session(database="neo4j") as session:
             session.run(query, **params)
     except Exception as e:
