@@ -31,7 +31,7 @@ KOREAN_ONLY_RULE = "출력은 고유명사(지명, 인명 등 불가피한 경�
 INITIAL_BRANCH_QUOTA = 2     # 초기 메인 스토리에서 생성할 분기(가지)의 개수 (n)
 TOTAL_DEPTH_PER_PATH = 12    # 시작부터 엔딩까지 이어지는 노드의 총 개수 (길이)
 
-def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=120):
+def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=300):
     full_system_prompt = f"{system_prompt}\n\n[중요 규칙]\n{KOREAN_ONLY_RULE}"
     
     messages = [{"role": "system", "content": full_system_prompt}, {"role": "user", "content": user_prompt}]
@@ -623,6 +623,6 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
 
 def _generate_universe_details(setting, synopsis):
     # [수정] play_time 대신 min/max(int)를 요청하도록 프롬프트 변경
-    sys_prompt = "세계관 상세 정보 JSON 생성 (title, description, detail_description, estimated_play_time_min (int), estimated_play_time_max (int))"
+    sys_prompt = "세계관 상세 정보 JSON 생성 (title, description, detail_description, estimated_play_time_min (int)(분 단위), estimated_play_time_max (int)(분 단위))"
     user_prompt = f"설정: {setting}\n줄거리: {synopsis[:500]}..."
     return call_llm(sys_prompt, user_prompt, json_format=True)
