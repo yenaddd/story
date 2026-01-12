@@ -22,12 +22,25 @@ class Story(models.Model):
     user_world_setting = models.TextField()
     
     main_cliche = models.ForeignKey(Cliche, on_delete=models.SET_NULL, null=True, related_name='stories')
-    twist_cliche = models.ForeignKey(Cliche, on_delete=models.SET_NULL, null=True, blank=True, related_name='twisted_stories')
-    twist_point_node_id = models.IntegerField(null=True, blank=True)
     
-    synopsis = models.TextField(help_text="초기 전체 시놉시스")
-    twisted_synopsis = models.TextField(blank=True, help_text="변주 후 변경된 시놉시스")
+    # [수정] 다중 분기를 위해 단일 분기 필드(twist_point_node_id, twisted_synopsis, twist_cliche)는 제거하거나
+    # 하위 호환성을 위해 남겨둘 수 있으나, 로직상 StoryBranch를 사용하므로 여기서는 깔끔하게 정리합니다.
+    # 만약 기존 데이터 보존이 필요하다면 필드를 남겨두셔도 됩니다.
+    
+    synopsis = models.TextField(help_text="초기 전체 시놉시스 (Main Plot)")
     created_at = models.DateTimeField(auto_now_add=True)
+
+# [신규] 다중 분기 정보를 저장하는 모델
+class StoryBranch(models.Model):
+    story = models.ForeignKey(Story, on_delete=models.CASCADE, related_name='branches')
+    # 어떤 노드에서 갈라져 나왔는지 (부모 노드)
+    parent_node = models.ForeignKey('StoryNode', on_delete=models.CASCADE, related_name='child_branches')
+    # 이 분기의 시놉시스
+    synopsis = models.TextField(help_text="분기된 시놉시스")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Branch from Node {self.parent_node_id}"
 
 class CharacterState(models.Model):
     story = models.ForeignKey(Story, on_delete=models.CASCADE, related_name='character_states')
@@ -43,6 +56,9 @@ class StoryNode(models.Model):
     story = models.ForeignKey(Story, on_delete=models.CASCADE, related_name='nodes')
     chapter_phase = models.CharField(max_length=50)
     content = models.TextField(help_text="2000자 내외의 줄거리")
+    
+    # 순서 파악을 위한 깊이(Depth) 필드 추가 (권장)
+    depth = models.IntegerField(default=0)
     
     prev_node = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='next_nodes')
     is_twist_point = models.BooleanField(default=False)
