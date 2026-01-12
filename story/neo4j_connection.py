@@ -142,7 +142,7 @@ def sync_node_to_neo4j(data: StoryNodeData):
     ON MATCH SET 
         n.title = $props.title,
         n.description = $props.description,
-        n.character_states = $props.character_state
+        n.character_states = $props.character_states
     """
     run_cypher(query, {"props": props})
 

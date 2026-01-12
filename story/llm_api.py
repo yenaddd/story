@@ -276,13 +276,13 @@ def _select_twist_point_from_candidates(candidates):
     sys_prompt = (
         "당신은 스토리 에디터입니다. 아래 장면 목록 중, 이야기의 흐름을 비틀어(Twist) "
         "새로운 분기를 만들기에 가장 흥미롭고 개연성 있는 지점을 하나 선택하세요.\n"
-        "반드시 JSON 형식 {'node_id': ID숫자} 로 응답하세요."
+        "반드시 JSON 형식 {'scene_id': ID숫자} 로 응답하세요."
     )
     user_prompt = f"후보 장면들:\n{prompt_text}"
 
     try:
         res = call_llm(sys_prompt, user_prompt, json_format=True)
-        selected_id = res.get('node_id')
+        selected_id = res.get('scene_id')
         if selected_id and selected_id in node_map:
             return node_map[selected_id]
     except Exception as e:
@@ -355,7 +355,7 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
         if universe_id:
             try:
                 neo4j_data = StoryNodeData(
-                    node_id=f"{universe_id}_{node.id}",
+                    scene_id=f"{universe_id}_{node.id}",
                     phase=phase_name,
                     title=scene_data.get('title', '무제'),
                     setting=scene_data.get('setting', ''),
