@@ -76,7 +76,7 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
 
 def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synopsis: str,
                                   title: str, description: str, detail_description: str, 
-                                  play_time: str, characters_info: str):
+                                  estimated_play_time: str, characters_info: str):
     """
     Universe 노드 상세 정보 업데이트 (요청 사항 반영)
     - 기존/분기 스토리, 주요 인물 정보, 예상 플레이 시간 등
@@ -89,7 +89,7 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
         u.title = $title,
         u.description = $description,           // 간단한 소개
         u.detail_description = $detail_description, // 상세 소개
-        u.play_time = $play_time,
+        u.estimated_play_time = $estimated_play_time,
         u.characters_info = $characters_info    // 주요 인물 정보 (JSON 문자열)
     """
     run_cypher(query, {
@@ -99,7 +99,7 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
         "title": title,
         "description": description,
         "detail_description": detail_description,
-        "play_time": play_time,
+        "estimated_play_time": estimated_play_time,
         "characters_info": characters_info
     })
     print(f"  [Neo4j] Universe Details Updated")
