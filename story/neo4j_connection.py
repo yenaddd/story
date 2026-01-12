@@ -42,7 +42,7 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
         u.setting = $world_setting,
         u.protagonist_name = $protagonist_name,
         u.experimental = false,
-        u.image_url = "",  // 이미지 링크 빈 필드
+        u.representative_image = "",  // 이미지 링크 빈 필드
         u.created_at = timestamp()
     ON MATCH SET 
         u.setting = $world_setting
@@ -122,7 +122,7 @@ def sync_node_to_neo4j(data: StoryNodeData):
     ON MATCH SET 
         n.title = $props.title,
         n.description = $props.description,
-        n.character_states = $props.character_states,
+        n.character_states = $props.character_state
     """
     run_cypher(query, {"props": props})
 
@@ -147,7 +147,7 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
     MATCH (curr:Scene {{node_id: $curr_id}})
     MATCH (next:Scene {{node_id: $next_id}})
     MERGE (curr)-[r:{rel_type} {{action_text: $action_text}}]->(next)
-    SET r.result_text = $result_text
+    SET r.result_text = $result_text,
         r.character_changes = $character_changes
     """
     run_cypher(query, {
