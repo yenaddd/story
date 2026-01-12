@@ -37,6 +37,7 @@ class StoryBranch(models.Model):
     parent_node = models.ForeignKey('StoryNode', on_delete=models.CASCADE, related_name='child_branches')
     # 이 분기의 시놉시스
     synopsis = models.TextField(help_text="분기된 시놉시스")
+    hierarchy_id = models.CharField(max_length=50, default="", help_text="분기 계층 ID")
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

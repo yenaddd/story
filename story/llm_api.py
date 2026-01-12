@@ -197,8 +197,13 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
         )
         
         # 분기 정보 저장 (DB)
-        StoryBranch.objects.create(story=story, parent_node=target_node, synopsis=twisted_synopsis)
-
+        StoryBranch.objects.create(
+                    story=story, 
+                    parent_node=target_node, 
+                    synopsis=twisted_synopsis,
+                    hierarchy_id=current_branch_num  # <--- 이 부분 추가
+                )
+                
         print(f"      📝 Generating Nodes for [{current_branch_num}] (Depth Fixed: {TOTAL_DEPTH_PER_PATH})...")
         new_branch_nodes = _generate_path_segment(
             story, twisted_synopsis, protagonist_name,
@@ -229,7 +234,6 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
                 print(f"      🛑 [{current_branch_num}] Leaf branch created (Next quota 0).")
 
     # [Point 9, 10] 루프가 끝나면 함수가 종료되면서 자연스럽게 상위 호출 스택으로 돌아감 (Backtracking)
-
 # ==========================================
 # [보조 함수들]
 # ==========================================
@@ -249,7 +253,8 @@ def _select_twist_point_from_candidates(candidates):
     주어진 노드 후보군(list) 중에서 가장 반전이 일어나기 좋은 지점을 LLM이 선택합니다.
     """
     if not candidates: return None
-    
+    candidates = [n for n in candidates if n.choices.count() < 2]
+    if not candidates: return None
     # 후보가 너무 적으면 랜덤 선택 (API 비용 절감)
     if len(candidates) < 3:
         return random.choice(candidates)
