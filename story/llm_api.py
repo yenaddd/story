@@ -31,7 +31,7 @@ KOREAN_ONLY_RULE = "출력은 고유명사(지명, 인명 등 불가피한 경�
 INITIAL_BRANCH_QUOTA = 2     # 초기 메인 스토리에서 생성할 분기(가지)의 개수 (n)
 TOTAL_DEPTH_PER_PATH = 12    # 시작부터 엔딩까지 이어지는 노드의 총 개수 (길이)
 
-def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=500):
+def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=400):
     full_system_prompt = f"{system_prompt}\n\n[중요 규칙]\n{KOREAN_ONLY_RULE}"
     
     messages = [{"role": "system", "content": full_system_prompt}, {"role": "user", "content": user_prompt}]
@@ -305,7 +305,7 @@ def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, u
 
 def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, universe_id):
     phases = ["발단", "전개", "절정", "결말"]
-    BATCH_SIZE = 3
+    BATCH_SIZE = 2
     
     created_nodes = []
     generated_count = 0
