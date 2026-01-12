@@ -109,7 +109,7 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
 # -----------------------------------------------------------
 @dataclass
 class StoryNodeData:
-    node_id: str          
+    scene_id: str          
     phase: str            # 기승전결
     title: str            # 장면 제목
     setting: str          # 어떤 장면인지 설정 텍스트
@@ -128,7 +128,7 @@ class StoryNodeData:
 def sync_node_to_neo4j(data: StoryNodeData):
     props = data.to_dict()
     query = """
-    MERGE (n:Scene {node_id: $props.node_id})
+    MERGE (n:Scene {scene_id: $props.scene_id})
     ON CREATE SET 
         n.title = $props.title,
         n.phase = $props.phase,
@@ -150,13 +150,13 @@ def sync_node_to_neo4j(data: StoryNodeData):
 # [3] 연결 관계 (조건 행동)
 # -----------------------------------------------------------
 
-def link_universe_to_first_scene(universe_id: str, first_node_id: str):
+def link_universe_to_first_scene(universe_id: str, first_scene_id: str):
     query = """
     MATCH (u:Universe {universe_id: $universe_id})
-    MATCH (n:Scene {node_id: $node_id})
+    MATCH (n:Scene {scene_id: $scene_id})
     MERGE (u)-[r:HAS_START]->(n)
     """
-    run_cypher(query, {"universe_id": universe_id, "node_id": first_node_id})
+    run_cypher(query, {"universe_id": universe_id, "scene_id": first_scene_id})
 
 def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}"):
     """
@@ -164,8 +164,8 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
     """
     rel_type = "TWIST_ACTION" if is_twist else "REQUIRED_ACTION"
     query = f"""
-    MATCH (curr:Scene {{node_id: $curr_id}})
-    MATCH (next:Scene {{node_id: $next_id}})
+    MATCH (curr:Scene {{scene_id: $curr_id}})
+    MATCH (next:Scene {{scene_id: $next_id}})
     MERGE (curr)-[r:{rel_type} {{action_text: $action_text}}]->(next)
     SET r.result_text = $result_text,
         r.character_changes = $character_changes
