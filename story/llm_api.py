@@ -111,8 +111,21 @@ def create_story_pipeline(user_world_setting):
     characters_info_json = _extract_characters_info(root_synopsis, protagonist_info)
     
     try:
-        update_universe_details_neo4j(universe_id, root_synopsis, "", universe_details.get("title", "무제"), "", "", "", characters_info_json)
-    except: pass
+        # [수정] 추출된 상세 정보와 min/max 시간을 Neo4j로 전송
+        update_universe_details_neo4j(
+            universe_id=universe_id, 
+            synopsis=root_synopsis, 
+            twisted_synopsis="", 
+            title=universe_details.get("title", "무제"), 
+            description=universe_details.get("description", ""), 
+            detail_description=universe_details.get("detail_description", ""), 
+            estimated_play_time_min=universe_details.get("estimated_play_time_min", 30), # 정수형 기본값
+            estimated_play_time_max=universe_details.get("estimated_play_time_max", 60), # 정수형 기본값
+            characters_info=characters_info_json
+        )
+    except Exception as e:
+        print(f"⚠️ Neo4j Details Update Failed: {e}")
+        pass
 
     # 4. 메인 경로 노드 생성 (엔딩까지)
     print("  [Step 4] Creating Main Path Nodes...")
@@ -166,8 +179,6 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
     if not valid_nodes: return
 
     # [Point 2] 분기 개수(n)에 맞게 구역을 나누어 '개연성 있는' 분기점 탐색
-    # sections로 나누는 이유는 n개의 분기점이 한 곳(예: 초반)에 몰리지 않고,
-    # 이야기 전체 흐름 속에서 적절히 분산되게 하기 위함입니다. (Probability distribution)
     sections = _split_nodes_into_sections(valid_nodes, quota)
     
     print(f"  👉 [Processing {hierarchy_id}] Finding {quota} twist points in this path...")
@@ -176,12 +187,10 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
     for idx, section in enumerate(sections):
         if not section: continue
         
-        # 현재 생성 중인 가지의 고유 번호 (예: 1-1, 1-2 ...)
         current_branch_num = f"{hierarchy_id}-{idx+1}"
         
         print(f"    🔎 [{current_branch_num}] Searching twist point in section {idx+1}/{quota}...")
         
-        # 개연성에 근거하여 섹션 내 최적의 분기점(노드) 선택
         target_node = _select_twist_point_from_candidates(section)
         
         if not target_node:
@@ -196,12 +205,11 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
             story, history_context, target_node.chapter_phase, characters_info_json
         )
         
-        # 분기 정보 저장 (DB)
         StoryBranch.objects.create(
                     story=story, 
                     parent_node=target_node, 
                     synopsis=twisted_synopsis,
-                    hierarchy_id=current_branch_num  # <--- 이 부분 추가
+                    hierarchy_id=current_branch_num
                 )
                 
         print(f"      📝 Generating Nodes for [{current_branch_num}] (Depth Fixed: {TOTAL_DEPTH_PER_PATH})...")
@@ -210,67 +218,55 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
             start_node=target_node, universe_id=universe_id, is_twist_branch=True
         )
 
-        # 분기점 연결 (선택지 생성)
+        # 분기점 연결
         if new_branch_nodes:
             original_choice = target_node.choices.first()
             original_action = original_choice.choice_text if original_choice else "원래대로 진행"
             _create_twist_condition(target_node, new_branch_nodes[0], universe_id, protagonist_name, original_action)
 
             # [Point 4, 7, 8] 재귀 호출 (DFS)
-            # 생성된 이 하위 흐름(new_branch_nodes)에 대해 n-1개의 분기를 찾으러 들어감
             next_quota = quota - 1
             if next_quota > 0:
                 print(f"      ↘️ Recursing into [{current_branch_num}] with quota {next_quota} (DFS)...")
                 _generate_recursive_story(
                     story, 
                     new_branch_nodes, 
-                    next_quota,  # n-1
+                    next_quota,
                     universe_id, 
                     protagonist_name, 
                     characters_info_json,
-                    current_branch_num # 계층 번호 전달 (1-1)
+                    current_branch_num
                 )
             else:
                 print(f"      🛑 [{current_branch_num}] Leaf branch created (Next quota 0).")
 
-    # [Point 9, 10] 루프가 끝나면 함수가 종료되면서 자연스럽게 상위 호출 스택으로 돌아감 (Backtracking)
+
 # ==========================================
 # [보조 함수들]
 # ==========================================
 
 def _split_nodes_into_sections(nodes, n):
-    """
-    노드 리스트를 n개의 구간으로 최대한 균등하게 나눕니다.
-    """
     if n <= 0: return []
     if n == 1: return [nodes]
-    
     k, m = divmod(len(nodes), n)
     return [nodes[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n)]
 
 def _select_twist_point_from_candidates(candidates):
-    """
-    주어진 노드 후보군(list) 중에서 가장 반전이 일어나기 좋은 지점을 LLM이 선택합니다.
-    """
     if not candidates: return None
     candidates = [n for n in candidates if n.choices.count() < 2]
     if not candidates: return None
-    # 후보가 너무 적으면 랜덤 선택 (API 비용 절감)
     if len(candidates) < 3:
         return random.choice(candidates)
         
     prompt_text = ""
     node_map = {}
     
-    # LLM에게 보낼 후보 목록 구성
     for n in candidates:
-        # 이미 분기가 많이 일어난 노드는 제외 (선택지 개수로 판단)
         if n.choices.count() >= 2: continue
-        
         prompt_text += f"[ID: {n.id}] Phase: {n.chapter_phase} | 내용: {n.content[:60]}...\n"
         node_map[n.id] = n
     
-    if not node_map: # 모든 후보가 이미 분기 꽉 참
+    if not node_map:
         return None
 
     sys_prompt = (
@@ -289,34 +285,26 @@ def _select_twist_point_from_candidates(candidates):
         print(f"      ⚠️ Twist Point Selection Error: {e}")
         pass
     
-    # [수정] 실패 시 억지로 랜덤 선택하지 않고 None 반환 (분기 생성 안 함)
     print("      ⚠️ No valid twist point selected by AI. Skipping branch generation.")
     return None
 
 def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, universe_id=None, is_twist_branch=False):
-    """
-    특정 지점(start_node)부터 엔딩까지 이어지는 노드들을 생성하고 선형으로 연결합니다.
-    """
     start_depth = start_node.depth if start_node else 0
     next_depth = start_depth + 1
     
     needed_nodes = TOTAL_DEPTH_PER_PATH - start_depth
     if needed_nodes < 1: needed_nodes = 1 
 
-    # 노드 생성
     nodes = _create_nodes_common(story, synopsis, protagonist_name, needed_nodes, next_depth, universe_id)
     
     if not nodes: return []
 
-    # 선형 연결
     _connect_linear_nodes(nodes, universe_id, protagonist_name)
     
     return nodes
 
 def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, universe_id):
     phases = ["발단", "전개", "절정", "결말"]
-    
-    # [설정] 한 번의 API 호출로 생성할 노드 개수 (안정성을 위해 2~3 권장)
     BATCH_SIZE = 3
     
     created_nodes = []
@@ -325,10 +313,8 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
     print(f"    🔄 [Batch Generation Start] Total request: {count} nodes (Batch size: {BATCH_SIZE})")
 
     while generated_count < count:
-        # 이번 턴에 생성할 개수 계산
         current_batch_size = min(BATCH_SIZE, count - generated_count)
         
-        # 문맥 연결: 이전에 생성된 노드가 있다면 그 마지막 내용을 문맥으로 전달
         prev_context = ""
         if created_nodes:
             last_node = created_nodes[-1]
@@ -347,7 +333,6 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
             f"JSON 포맷이 끊기지 않도록 주의하세요.\n"
         )
         
-        # 마지막 배치인지 확인하여 엔딩 강제
         is_last_batch = (generated_count + current_batch_size) >= count
         if is_last_batch:
             sys_prompt += "이번 배치의 마지막 장면은 이야기의 **확실한 결말(Ending)**을 맺어야 합니다.\n"
@@ -359,7 +344,6 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
             f"JSON 형식: {{'scenes': [ ... ({current_batch_size}개의 장면 객체) ... ]}}"
         )
         
-        # API 호출
         print(f"      runner: generating batch {generated_count+1}~{generated_count+current_batch_size}...")
         try:
             res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=8000)
@@ -368,23 +352,18 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
             print(f"      ⚠️ Batch generation failed: {e}")
             scenes = []
 
-        # 결과 처리
         if not scenes:
             print("      ⚠️ Empty response received. Retrying or stopping.")
-            # 실패 시 안전하게 루프 탈출 (무한 루프 방지) 혹은 재시도 로직 추가 가능
             break
 
         for i, scene_data in enumerate(scenes):
-            # 전체 기준 현재 깊이 계산
             current_depth = start_depth + generated_count + i
             
-            # 단계(Phase) 매핑
             progress_ratio = current_depth / TOTAL_DEPTH_PER_PATH
             phase_idx = int(progress_ratio * 4) 
             if phase_idx > 3: phase_idx = 3
             phase_name = phases[phase_idx]
 
-            # DB 저장
             node = StoryNode.objects.create(
                 story=story, 
                 chapter_phase=phase_name, 
@@ -393,13 +372,11 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
                 is_twist_point=False 
             )
 
-            # 임시 데이터 저장 (연결 시 사용)
             changes_json = json.dumps(scene_data.get('character_changes', {}), ensure_ascii=False)
             node.temp_character_changes = changes_json
             
             created_nodes.append(node)
             
-            # Neo4j 동기화
             if universe_id:
                 try:
                     neo4j_data = StoryNodeData(
@@ -417,14 +394,10 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
                 except Exception as e:
                     print(f"Neo4j Node Sync Error: {e}")
 
-        # 생성된 개수만큼 카운트 증가
         generated_count += len(scenes)
         
-        # LLM이 요청한 개수보다 적게 줬을 경우 방어 코드 (무한 루프 방지)
         if len(scenes) < current_batch_size:
              print("      ⚠️ LLM generated fewer nodes than requested.")
-             # 부족한 만큼은 다음 루프에서 처리하도록 두거나, 여기서 강제 종료할 수 있음
-             # 여기서는 안전하게 진행된 만큼만 인정하고 계속 시도
              pass
 
     return created_nodes
@@ -447,7 +420,6 @@ def _match_cliche(setting):
         print("⚠️ DB에 장르 데이터가 없습니다.")
         return None
     
-    # 1. 장르 선정
     genre_text_list = []
     for g in all_genres:
         desc = g.description if g.description else "설명 없음"
@@ -468,7 +440,6 @@ def _match_cliche(setting):
     except Genre.DoesNotExist:
         selected_genre = all_genres.first()
 
-    # 2. 클리셰 선정
     cliches = Cliche.objects.filter(genre=selected_genre)
     if not cliches.exists(): return Cliche.objects.first()
 
@@ -507,9 +478,6 @@ def _refine_setting_and_protagonist(raw_setting):
     return res.get('refined_setting', raw_setting), res.get('protagonist', {'name':'이안', 'desc':'평범함'})
 
 def _generate_synopsis(story, cliche, p_name, p_desc, include_example=False):
-    """
-    [수정] include_example=True 일 때만 예시 작품(example_work_summary)을 프롬프트에 포함합니다.
-    """
     sys_prompt = (
         "당신은 베스트셀러 웹소설 작가입니다. "
         "주어진 세계관 설정과 **지정된 필수 클리셰**를 완벽하게 조합하여 매력적인 시놉시스를 작성하세요.\n"
@@ -525,7 +493,6 @@ def _generate_synopsis(story, cliche, p_name, p_desc, include_example=False):
         f"전개 가이드: {cliche.structure_guide}"
     )
     
-    # [수정] 예시 작품 추가 로직
     if include_example and cliche.example_work_summary:
         cliche_detail += f"\n\n★ 참고용 대표 예시 작품 (영감만 받을 것) ★\n{cliche.example_work_summary}"
     
@@ -655,6 +622,7 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
         except: pass
 
 def _generate_universe_details(setting, synopsis):
-    sys_prompt = "세계관 상세 정보 JSON 생성 (title, description, detail_description, play_time)"
+    # [수정] play_time 대신 min/max(int)를 요청하도록 프롬프트 변경
+    sys_prompt = "세계관 상세 정보 JSON 생성 (title, description, detail_description, estimated_play_time_min (int), estimated_play_time_max (int))"
     user_prompt = f"설정: {setting}\n줄거리: {synopsis[:500]}..."
     return call_llm(sys_prompt, user_prompt, json_format=True)

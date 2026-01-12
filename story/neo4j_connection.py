@@ -76,10 +76,12 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
 
 def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synopsis: str,
                                   title: str, description: str, detail_description: str, 
-                                  estimated_play_time: str, characters_info: str):
+                                  estimated_play_time_min: int, estimated_play_time_max: int, 
+                                  characters_info: str):
     """
     Universe 노드 상세 정보 업데이트 (요청 사항 반영)
-    - 기존/분기 스토리, 주요 인물 정보, 예상 플레이 시간 등
+    - 기존/분기 스토리, 주요 인물 정보
+    - [수정] 예상 플레이 시간은 min/max 정수형으로 저장
     """
     query = """
     MATCH (u:Universe {universe_id: $universe_id})
@@ -89,7 +91,8 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
         u.title = $title,
         u.description = $description,           // 간단한 소개
         u.detail_description = $detail_description, // 상세 소개
-        u.estimated_play_time = $estimated_play_time,
+        u.estimated_play_time_min = $estimated_play_time_min,
+        u.estimated_play_time_max = $estimated_play_time_max,
         u.characters_info = $characters_info    // 주요 인물 정보 (JSON 문자열)
     """
     run_cypher(query, {
@@ -99,10 +102,11 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
         "title": title,
         "description": description,
         "detail_description": detail_description,
-        "estimated_play_time": estimated_play_time,
+        "estimated_play_time_min": estimated_play_time_min,
+        "estimated_play_time_max": estimated_play_time_max,
         "characters_info": characters_info
     })
-    print(f"  [Neo4j] Universe Details Updated")
+    print(f"  [Neo4j] Universe Details Updated (Time: {estimated_play_time_min}~{estimated_play_time_max} min)")
 
 # -----------------------------------------------------------
 # [2] 스토리(Scene) 노드
