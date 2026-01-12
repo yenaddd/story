@@ -301,7 +301,7 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
                 "**[엔딩 생성 모드]**\n"
                 "주인공의 서사를 완벽하게 마무리하는 **마지막 엔딩 장면(1개)**을 작성하세요.\n"
                 "- 확실하고 닫힌 결말(Closed Ending)\n"
-                "- 1000자 내외의 풍부한 분량\n"
+                "- 500자 이상의 풍부한 분량\n"
                 "- 전체 흐름과 인물의 감정선을 통합하여 감동적인 마무리를 지으세요.\n"
             )
             req_count_str = "1개 (엔딩)"
