@@ -316,60 +316,119 @@ def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, u
 def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, universe_id):
     phases = ["발단", "전개", "절정", "결말"]
     
-    sys_prompt = (
-        f"당신은 인터랙티브 스토리 작가입니다. 주인공 '{protagonist_name}'의 시점에서 장면(Node)들을 생성하세요.\n"
-        "각 장면은 title, description(500자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다.\n\n"
-        "**[중요]**\n"
-        f"생성해야 할 노드의 개수는 총 {count}개입니다.\n"
-        "마지막 노드(Last Node)는 반드시 이야기의 **확실한 끝(Ending)**을 맺어야 합니다.\n"
-        "어물쩍 넘어가거나 다음 이야기가 있는 것처럼 끝내지 말고, 확실한 결말을 지으세요."
-    )
-    user_prompt = f"시놉시스: {synopsis}\n생성 개수: {count}개\nJSON 형식: {{'scenes': [...]}}"
-    
-    res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=8000)
-    scenes = res.get('scenes', [])
+    # [설정] 한 번의 API 호출로 생성할 노드 개수 (안정성을 위해 2~3 권장)
+    BATCH_SIZE = 3
     
     created_nodes = []
-    for i, scene_data in enumerate(scenes):
-        current_depth = start_depth + i
-        
-        # 단계(Phase) 매핑
-        progress_ratio = current_depth / TOTAL_DEPTH_PER_PATH
-        phase_idx = int(progress_ratio * 4) 
-        if phase_idx > 3: phase_idx = 3
-        phase_name = phases[phase_idx]
+    generated_count = 0
+    
+    print(f"    🔄 [Batch Generation Start] Total request: {count} nodes (Batch size: {BATCH_SIZE})")
 
-        node = StoryNode.objects.create(
-            story=story, 
-            chapter_phase=phase_name, 
-            content=scene_data.get('description', ''),
-            depth=current_depth,
-            is_twist_point=False 
+    while generated_count < count:
+        # 이번 턴에 생성할 개수 계산
+        current_batch_size = min(BATCH_SIZE, count - generated_count)
+        
+        # 문맥 연결: 이전에 생성된 노드가 있다면 그 마지막 내용을 문맥으로 전달
+        prev_context = ""
+        if created_nodes:
+            last_node = created_nodes[-1]
+            prev_context = (
+                f"\n[직전 장면 요약]\n"
+                f"장면 ID: {last_node.id}\n"
+                f"마지막 내용: {last_node.content[-500:]}\n"
+                f"-> 위 내용에 자연스럽게 이어서 다음 장면들을 작성하세요."
+            )
+
+        sys_prompt = (
+            f"당신은 인터랙티브 스토리 작가입니다. 주인공 '{protagonist_name}'의 시점에서 장면(Node)들을 생성하세요.\n"
+            "각 장면은 title, description(500자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다.\n\n"
+            "**[중요]**\n"
+            f"생성해야 할 노드의 개수는 **정확히 {current_batch_size}개**입니다.\n"
+            f"JSON 포맷이 끊기지 않도록 주의하세요.\n"
         )
-
-        changes_json = json.dumps(scene_data.get('character_changes', {}), ensure_ascii=False)
-        node.temp_character_changes = changes_json
-
-        created_nodes.append(node)
         
-        if universe_id:
-            try:
-                neo4j_data = StoryNodeData(
-                    scene_id=f"{universe_id}_{node.id}",
-                    phase=phase_name,
-                    title=scene_data.get('title', '무제'),
-                    setting=scene_data.get('setting', ''),
-                    description=scene_data.get('description', ''),
-                    purpose=scene_data.get('purpose', ''),
-                    characters_list=scene_data.get('characters_list', []),
-                    character_states=json.dumps(scene_data.get('character_states', {}), ensure_ascii=False),
-                    depth=current_depth
-                )
-                sync_node_to_neo4j(neo4j_data)
-            except Exception as e:
-                print(f"Neo4j Node Sync Error: {e}")
-    return created_nodes
+        # 마지막 배치인지 확인하여 엔딩 강제
+        is_last_batch = (generated_count + current_batch_size) >= count
+        if is_last_batch:
+            sys_prompt += "이번 배치의 마지막 장면은 이야기의 **확실한 결말(Ending)**을 맺어야 합니다.\n"
 
+        user_prompt = (
+            f"전체 시놉시스: {synopsis}\n"
+            f"{prev_context}\n"
+            f"요청 생성 개수: {current_batch_size}개\n"
+            f"JSON 형식: {{'scenes': [ ... ({current_batch_size}개의 장면 객체) ... ]}}"
+        )
+        
+        # API 호출
+        print(f"      runner: generating batch {generated_count+1}~{generated_count+current_batch_size}...")
+        try:
+            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=8000)
+            scenes = res.get('scenes', [])
+        except Exception as e:
+            print(f"      ⚠️ Batch generation failed: {e}")
+            scenes = []
+
+        # 결과 처리
+        if not scenes:
+            print("      ⚠️ Empty response received. Retrying or stopping.")
+            # 실패 시 안전하게 루프 탈출 (무한 루프 방지) 혹은 재시도 로직 추가 가능
+            break
+
+        for i, scene_data in enumerate(scenes):
+            # 전체 기준 현재 깊이 계산
+            current_depth = start_depth + generated_count + i
+            
+            # 단계(Phase) 매핑
+            progress_ratio = current_depth / TOTAL_DEPTH_PER_PATH
+            phase_idx = int(progress_ratio * 4) 
+            if phase_idx > 3: phase_idx = 3
+            phase_name = phases[phase_idx]
+
+            # DB 저장
+            node = StoryNode.objects.create(
+                story=story, 
+                chapter_phase=phase_name, 
+                content=scene_data.get('description', ''),
+                depth=current_depth,
+                is_twist_point=False 
+            )
+
+            # 임시 데이터 저장 (연결 시 사용)
+            changes_json = json.dumps(scene_data.get('character_changes', {}), ensure_ascii=False)
+            node.temp_character_changes = changes_json
+            
+            created_nodes.append(node)
+            
+            # Neo4j 동기화
+            if universe_id:
+                try:
+                    neo4j_data = StoryNodeData(
+                        scene_id=f"{universe_id}_{node.id}",
+                        phase=phase_name,
+                        title=scene_data.get('title', '무제'),
+                        setting=scene_data.get('setting', ''),
+                        description=scene_data.get('description', ''),
+                        purpose=scene_data.get('purpose', ''),
+                        characters_list=scene_data.get('characters_list', []),
+                        character_states=json.dumps(scene_data.get('character_states', {}), ensure_ascii=False),
+                        depth=current_depth
+                    )
+                    sync_node_to_neo4j(neo4j_data)
+                except Exception as e:
+                    print(f"Neo4j Node Sync Error: {e}")
+
+        # 생성된 개수만큼 카운트 증가
+        generated_count += len(scenes)
+        
+        # LLM이 요청한 개수보다 적게 줬을 경우 방어 코드 (무한 루프 방지)
+        if len(scenes) < current_batch_size:
+             print("      ⚠️ LLM generated fewer nodes than requested.")
+             # 부족한 만큼은 다음 루프에서 처리하도록 두거나, 여기서 강제 종료할 수 있음
+             # 여기서는 안전하게 진행된 만큼만 인정하고 계속 시도
+             pass
+
+    return created_nodes
+    
 def _get_story_history(target_node):
     path_contents = []
     curr = target_node
