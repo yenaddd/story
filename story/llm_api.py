@@ -162,7 +162,7 @@ def create_story_pipeline(user_world_setting):
     # 1. 설정 구체화 및 주인공 정의
     refined_setting, protagonist_info = _refine_setting_and_protagonist(user_world_setting)
     protagonist_name = protagonist_info['name']
-    print(f"✅ Protagonist: {protagonist_name}\n")
+    print(f"✅ Protagonist: {protagonist_name}")
 
     try:
         create_universe_node_neo4j(universe_id, refined_setting, protagonist_name)
