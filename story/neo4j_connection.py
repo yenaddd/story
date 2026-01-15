@@ -81,7 +81,7 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
     """
     Universe 노드 상세 정보 업데이트 (요청 사항 반영)
     - 기존/분기 스토리, 주요 인물 정보
-    - [수정] 예상 플레이 시간은 min/max 정수형으로 저장
+    - 예상 플레이 시간은 min/max 정수형으로 저장
     """
     query = """
     MATCH (u:Universe {universe_id: $universe_id})
