@@ -11,7 +11,7 @@ _DRIVER = None
 
 def get_driver():
     global _DRIVER
-    # [추가] 사용 설정(USE_NEO4J)이 꺼져 있으면 드라이버를 생성하지 않음
+    # 사용 설정(USE_NEO4J)이 꺼져 있으면 드라이버를 생성하지 않음
     if not settings.USE_NEO4J:
         return None
 
@@ -34,7 +34,7 @@ def close_driver():
         _DRIVER = None
 
 def run_cypher(query: str, params: dict = None):
-    # [핵심] 친구 컴퓨터(USE_NEO4J=False)에서는 여기서 바로 함수가 종료됩니다.
+    # 친구 컴퓨터(USE_NEO4J=False)에서는 여기서 바로 함수가 종료됩니다.
     if not settings.USE_NEO4J:
         return
 
@@ -164,14 +164,18 @@ def link_universe_to_first_scene(universe_id: str, first_scene_id: str):
 
 def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}"):
     """
-    Scene 간의 연결은 '필수 행동(REQUIRED_ACTION)'으로 정의
+    Scene 간의 연결을 'ACTION'으로 통일하고, 
+    type 속성을 통해 'normal'와 'twist'를 구분합니다.
+    기존 action_text 내용은 action 속성에 저장됩니다.
     """
-    rel_type = "TWIST_ACTION" if is_twist else "REQUIRED_ACTION"
+    action_type = "twist" if is_twist else "normal"
+
     query = f"""
     MATCH (curr:Scene {{scene_id: $curr_id}})
     MATCH (next:Scene {{scene_id: $next_id}})
-    MERGE (curr)-[r:{rel_type} {{action_text: $action_text}}]->(next)
-    SET r.result_text = $result_text,
+    MERGE (curr)-[r:ACTION {{action: $action_text}}]->(next)
+    SET r.type = $action_type,
+        r.result_text = $result_text,
         r.character_changes = $character_changes
     """
     run_cypher(query, {
@@ -179,6 +183,6 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
         "next_id": next_id, 
         "action_text": action_text, 
         "result_text": result_text,
-        "character_changes": character_changes # 전 노드 대비 변화 JSON string
-
+        "character_changes": character_changes, # 이전 노드 대비 변화 JSON string
+        "action_type": action_type  # normal or twist
     })
