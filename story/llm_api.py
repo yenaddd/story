@@ -83,6 +83,61 @@ def _clean_data_recursive(data):
     else:
         return data
 
+
+GENRE_NAMING_GUIDE = {
+    "로맨스": (
+        "Create trendy, sentimental, and sophisticated modern Korean names "
+        "typical of protagonists in K-Dramas or Romance Webtoons. "
+        "Avoid old-fashioned names. (e.g., 'Seon-jae', 'Yi-seo', 'Gu-won')"
+    ),
+    "판타지": (
+        "Use elegant, aristocratic Western-style names often found in "
+        "'Romance Fantasy' (RoFan) webtoons or Western fantasy novels. "
+        "They should sound noble and graceful. (e.g., 'Callisto', 'Penelope', 'Arwin')"
+    ),
+    "무협": (
+        "Use weighty Sino-Korean names or prestigious clan names "
+        "typical of traditional Wuxia (Murim) novels. "
+        "They should sound strong and classical. (e.g., 'Cheong-myeong', 'Hwa-san', 'Namgung')"
+    ),
+    "SF": (
+        "Use names with a multinational feel or mix with code names/aliases, "
+        "typical of Cyberpunk games or Sci-Fi movies. (e.g., 'V', 'K', 'David')"
+    ),
+    "추리/미스터리": (
+        "Use realistic Korean names that sound ordinary but imply a hidden backstory or secrets, "
+        "like characters in Korean thriller movies or crime dramas."
+    ),
+    "호러": (
+        "Use realistic Korean names that evoke a somewhat chilly, sensitive, or nervous atmosphere, "
+        "suitable for a horror setting."
+    ),
+}
+
+def _generate_name_candidates(setting, genre_name):
+    """
+    [신규] 장르와 설정을 분석하여 어울리는 캐릭터 이름 후보를 생성하는 함수
+    """
+    # 장르별 가이드 가져오기 (없으면 기본값)
+    naming_style = GENRE_NAMING_GUIDE.get(genre_name, "해당 장르의 인기 작품 주인공들의 작명 센스를 참고하여 독창적인 이름을 지으세요.")
+    
+    sys_prompt = (
+        "당신은 소설 캐릭터 네이밍 전문가입니다. "
+        "주어진 '세계관'과 '장르'를 분석하여, 그에 가장 잘 어울리는 **매력적이고 독창적인 캐릭터 이름 6개**를 제안하세요.\n"
+        "1. 흔한 이름(김철수, 이영희 등)은 절대 금지입니다.\n"
+        f"2. 작명 스타일 가이드: {naming_style}\n"
+        "3. 출력 형식: JSON {'names': ['이름1', '이름2', ...]}"
+    )
+    
+    user_prompt = f"장르: {genre_name}\n세계관: {setting}"
+    
+    try:
+        # 온도를 높여(0.8) 창의적인 이름이 나오도록 유도
+        res = call_llm(sys_prompt, user_prompt, json_format=True, temperature=0.8) 
+        return res.get('names', [])
+    except:
+        return []
+
 def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=300):
     # 시스템 프롬프트에 한국어 제약 조건 추가
     full_system_prompt = f"{system_prompt}\n\n{KOREAN_ONLY_RULE}"    
@@ -172,6 +227,10 @@ def create_story_pipeline(user_world_setting):
     matched_cliche = _match_cliche(refined_setting)
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
+    print(f"  [Step 2.5] Generating Creative Names based on [{matched_cliche.genre.name}] style...")
+    name_candidates = _generate_name_candidates(refined_setting, matched_cliche.genre.name)
+    print(f"-> Recommended Names: {name_candidates}")
+
     # 3. 메인 시놉시스 생성
     print("  [Step 3] Generating Root Synopsis...")
     root_synopsis = _generate_synopsis(story, matched_cliche, protagonist_name, protagonist_info['desc'], include_example=True)
@@ -619,7 +678,7 @@ def _match_cliche(setting):
         return random.choice(list(cliches))
 
 def _refine_setting_and_protagonist(raw_setting):
-    sys_prompt = "세계관과 주인공을 정의하세요. 주인공 이름은 한글, 성격/믿음/사상/외모를 포함해야 합니다."
+    sys_prompt = "세계관과 주인공을 정의하세요. 주인공 이름은 한글, 성격/믿음/사상/외모를 포함해야 하고 입력된 세계관의 분위기에 어울리는 개성있는 이름이여야 합니다."
     user_prompt = (
         f"입력: {raw_setting}\n"
         "출력 JSON: {'refined_setting': '...', 'protagonist': {'name': '...', 'desc': '성격, 믿음, 사상, 외모 포함 상세 묘사'}}"
@@ -627,7 +686,17 @@ def _refine_setting_and_protagonist(raw_setting):
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     return res.get('refined_setting', raw_setting), res.get('protagonist', {'name':'이안', 'desc':'평범함'})
 
-def _generate_synopsis(story, cliche, p_name, p_desc, include_example=False):
+def _generate_synopsis(story, cliche, p_name, p_desc, name_candidates=[], include_example=False):
+    
+    names_instruction = ""
+    if name_candidates:
+        names_str = ", ".join(name_candidates)
+        names_instruction = (
+            f"\n5. **[중요] 등장인물 작명**: 새로운 인물이 등장할 때는 다음 후보 이름들을 우선적으로 사용하세요.\n"
+            f"   - 추천 이름 목록: [{names_str}]\n"
+            f"   - 위 이름들을 역할에 맞게 배정하여 사용하세요."
+        )
+    
     sys_prompt = (
         "당신은 베스트셀러 웹소설 작가입니다. "
         "주어진 세계관 설정과 **지정된 필수 클리셰**를 완벽하게 조합하여 매력적인 시놉시스를 작성하세요.\n"
@@ -635,6 +704,7 @@ def _generate_synopsis(story, cliche, p_name, p_desc, include_example=False):
         "2. 기승전결 구조와 주인공의 내면 변화 포함.\n"
         "3. **선택된 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.**"
         "4. **사용자 설정 우선**: 사용자가 입력한 구체적인 설정은 크게 변경하거나 생략하지 말고 최대한 이야기에 포함시키세요.\n"
+        f"{names_instruction}\n"
         "5. 문장은 번역투가 아닌 자연스러운 한국어 소설체로 작성하세요."
     )
     
