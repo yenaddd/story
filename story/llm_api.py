@@ -24,6 +24,7 @@ MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1"
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 # 공통 제약 조건 상수
+#KOREAN_ONLY_RULE = "출력은 고유명사(지명, 인명 등 불가피한 경우)를 제외하고는 반드시 '한국어'로 작성해야 합니다. 영어를 섞어 쓰지 마세요."
 KOREAN_ONLY_RULE = """
 [필수 규칙]
 [Output Rules]
@@ -32,13 +33,6 @@ KOREAN_ONLY_RULE = """
 3. Do NOT use Chinese characters.
 4. Exception: Keep Proper Nouns (Names like 'V', 'Silverhand') in English if necessary.
 """
-
-# ==========================================
-# [설정 변수: 스토리 구조 제어]
-# ==========================================
-INITIAL_BRANCH_QUOTA = 2     
-TOTAL_DEPTH_PER_PATH = 12    
-
 def _clean_text_value(text):
     """
     [스마트 필터링] 문자열 값에서만 불필요한 외국어를 제거합니다.
@@ -49,6 +43,44 @@ def _clean_text_value(text):
     # 1. 한자(Chinese) 및 일본어 등 제거 (범위 확대)
     # \u4e00-\u9fff (한자), \u3040-\u30ff (일본어)
     text = re.sub(r'[\u4e00-\u9fff\u3040-\u30ff]+', '', text)
+    
+    # 2. 괄호 안의 영어 제거 (예: (System), (Love)) -> 보통 번역 후 병기하는 경우라 삭제해도 무방
+    text = re.sub(r'\([A-Za-z\s]+\)', '', text)
+
+    # 3. 소문자로 시작하는 영어 단어 제거 (동사, 일반명사 등)
+    # 예: "pushed되었다" -> "되었다", "consciousness가" -> "가"
+    # 예외: "V", "Silverhand" 처럼 대문자로 시작하는 고유명사는 남김
+    def _remove_lowercase_english(match):
+        word = match.group()
+        # 첫 글자가 소문자면 삭제, 대문자면 유지
+        if word[0].islower():
+            return ""
+        return word
+
+    text = re.sub(r'[A-Za-z]+', _remove_lowercase_english, text)
+    
+    # 4. 불필요한 공백 정리
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
+
+def _clean_data_recursive(data):
+    """
+    JSON 데이터의 구조는 건드리지 않고, 내부의 '문자열 값'만 찾아서 청소합니다.
+    """
+    if isinstance(data, dict):
+        return {k: _clean_data_recursive(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_clean_data_recursive(v) for v in data]
+    elif isinstance(data, str):
+        return _clean_text_value(data)
+    else:
+        return data
+
+def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=120):
+    # 시스템 프롬프트에 한국어 제약 조건 추가
+    full_system_prompt = f"{system_prompt}\n\n{KOREAN_ONLY_RULE}"
+    #ull_system_prompt = f"{user_prompt}\n\n----------------\n{KOREAN_ONLY_RULE}"
     
     # 2. 괄호 안의 영어 제거 (예: (System), (Love)) -> 보통 번역 후 병기하는 경우라 삭제해도 무방
     text = re.sub(r'\([A-Za-z\s]+\)', '', text)
@@ -170,6 +202,8 @@ def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_to
                 print(" Done.")
             else:
                 content = response.choices[0].message.content
+
+            
             '''
             if json_format:
                 cleaned = content.replace("```json", "").replace("```", "").strip()
@@ -702,9 +736,8 @@ def _generate_synopsis(story, cliche, p_name, p_desc, name_candidates=[], includ
         "주어진 세계관 설정과 **지정된 필수 클리셰**를 완벽하게 조합하여 매력적인 시놉시스를 작성하세요.\n"
         "1. 분량은 2000자 이상.\n"
         "2. 기승전결 구조와 주인공의 내면 변화 포함.\n"
-        "3. **선택된 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.**"
+        "3. **선택된 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.**\n"
         "4. **사용자 설정 우선**: 사용자가 입력한 구체적인 설정은 크게 변경하거나 생략하지 말고 최대한 이야기에 포함시키세요.\n"
-        f"{names_instruction}\n"
         "5. 문장은 번역투가 아닌 자연스러운 한국어 소설체로 작성하세요."
     )
     
@@ -719,12 +752,12 @@ def _generate_synopsis(story, cliche, p_name, p_desc, name_candidates=[], includ
         cliche_detail += f"\n\n★ 참고용 대표 예시 작품 (영감만 받을 것) ★\n{cliche.example_work_summary}"
     
     user_prompt = (
-        f"세계관 설정: {story.user_world_setting}\n"
+        f"★ 사용자 세계관 설정 (최우선 반영): {story.user_world_setting}\n"
         f"주인공: {p_name} ({p_desc})\n"
         f"----------------------------------------\n"
         f"★ 필수 적용 클리셰 정보 ★\n{cliche_detail}\n"
         f"----------------------------------------\n"
-        "위 내용을 바탕으로 전체 시놉시스를 작성해줘."
+        "위 내용을 바탕으로 사용자의 설정을 충실히 반영한 전체 시놉시스를 작성해줘."
     )
     
     return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
@@ -735,6 +768,9 @@ def _extract_characters_info(synopsis, protagonist_info):
     res = call_llm(sys_prompt, user_prompt, json_format=True)
     
     chars = res.get('characters', [])
+
+    
+
     if not any(c.get('name') == protagonist_info['name'] for c in chars):
         chars.insert(0, protagonist_info)
         
