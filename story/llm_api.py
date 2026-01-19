@@ -33,6 +33,42 @@ KOREAN_ONLY_RULE = """
 3. Do NOT use Chinese characters.
 4. Exception: Keep Proper Nouns (Names like 'V', 'Silverhand') in English if necessary.
 """
+# ==========================================
+# [설정 변수: 스토리 구조 제어]
+# ==========================================
+INITIAL_BRANCH_QUOTA = 2     
+TOTAL_DEPTH_PER_PATH = 12  
+
+GENRE_NAMING_GUIDE = {
+    "로맨스": (
+        "Create trendy, sentimental, and sophisticated modern Korean names "
+        "typical of protagonists in K-Dramas or Romance Webtoons. "
+        "Avoid old-fashioned names. (e.g., 'Seon-jae', 'Yi-seo', 'Gu-won')"
+    ),
+    "판타지": (
+        "Use elegant, aristocratic Western-style names often found in "
+        "'Romance Fantasy' (RoFan) webtoons or Western fantasy novels. "
+        "They should sound noble and graceful. (e.g., 'Callisto', 'Penelope', 'Arwin')"
+    ),
+    "무협": (
+        "Use weighty Sino-Korean names or prestigious clan names "
+        "typical of traditional Wuxia (Murim) novels. "
+        "They should sound strong and classical. (e.g., 'Cheong-myeong', 'Hwa-san', 'Namgung')"
+    ),
+    "SF": (
+        "Use names with a multinational feel or mix with code names/aliases, "
+        "typical of Cyberpunk games or Sci-Fi movies. (e.g., 'V', 'K', 'David')"
+    ),
+    "추리/미스터리": (
+        "Use realistic Korean names that sound ordinary but imply a hidden backstory or secrets, "
+        "like characters in Korean thriller movies or crime dramas."
+    ),
+    "호러": (
+        "Use realistic Korean names that evoke a somewhat chilly, sensitive, or nervous atmosphere, "
+        "suitable for a horror setting."
+    ),
+}
+
 def _clean_text_value(text):
     """
     [스마트 필터링] 문자열 값에서만 불필요한 외국어를 제거합니다.
@@ -77,74 +113,6 @@ def _clean_data_recursive(data):
     else:
         return data
 
-def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=120):
-    # 시스템 프롬프트에 한국어 제약 조건 추가
-    full_system_prompt = f"{system_prompt}\n\n{KOREAN_ONLY_RULE}"
-    #ull_system_prompt = f"{user_prompt}\n\n----------------\n{KOREAN_ONLY_RULE}"
-    
-    # 2. 괄호 안의 영어 제거 (예: (System), (Love)) -> 보통 번역 후 병기하는 경우라 삭제해도 무방
-    text = re.sub(r'\([A-Za-z\s]+\)', '', text)
-
-    # 3. 소문자로 시작하는 영어 단어 제거 (동사, 일반명사 등)
-    # 예: "pushed되었다" -> "되었다", "consciousness가" -> "가"
-    # 예외: "V", "Silverhand" 처럼 대문자로 시작하는 고유명사는 남김
-    def _remove_lowercase_english(match):
-        word = match.group()
-        # 첫 글자가 소문자면 삭제, 대문자면 유지
-        if word[0].islower():
-            return ""
-        return word
-
-    text = re.sub(r'[A-Za-z]+', _remove_lowercase_english, text)
-    
-    # 4. 불필요한 공백 정리
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    return text
-
-def _clean_data_recursive(data):
-    """
-    JSON 데이터의 구조는 건드리지 않고, 내부의 '문자열 값'만 찾아서 청소합니다.
-    """
-    if isinstance(data, dict):
-        return {k: _clean_data_recursive(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [_clean_data_recursive(v) for v in data]
-    elif isinstance(data, str):
-        return _clean_text_value(data)
-    else:
-        return data
-
-
-GENRE_NAMING_GUIDE = {
-    "로맨스": (
-        "Create trendy, sentimental, and sophisticated modern Korean names "
-        "typical of protagonists in K-Dramas or Romance Webtoons. "
-        "Avoid old-fashioned names. (e.g., 'Seon-jae', 'Yi-seo', 'Gu-won')"
-    ),
-    "판타지": (
-        "Use elegant, aristocratic Western-style names often found in "
-        "'Romance Fantasy' (RoFan) webtoons or Western fantasy novels. "
-        "They should sound noble and graceful. (e.g., 'Callisto', 'Penelope', 'Arwin')"
-    ),
-    "무협": (
-        "Use weighty Sino-Korean names or prestigious clan names "
-        "typical of traditional Wuxia (Murim) novels. "
-        "They should sound strong and classical. (e.g., 'Cheong-myeong', 'Hwa-san', 'Namgung')"
-    ),
-    "SF": (
-        "Use names with a multinational feel or mix with code names/aliases, "
-        "typical of Cyberpunk games or Sci-Fi movies. (e.g., 'V', 'K', 'David')"
-    ),
-    "추리/미스터리": (
-        "Use realistic Korean names that sound ordinary but imply a hidden backstory or secrets, "
-        "like characters in Korean thriller movies or crime dramas."
-    ),
-    "호러": (
-        "Use realistic Korean names that evoke a somewhat chilly, sensitive, or nervous atmosphere, "
-        "suitable for a horror setting."
-    ),
-}
 
 def _generate_name_candidates(setting, genre_name):
     """
