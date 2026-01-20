@@ -293,7 +293,7 @@ def create_story_pipeline(user_world_setting):
 # [핵심 로직: DFS 재귀적 스토리 생성]
 # ==========================================
 
-def _generate_recursive_story(story, current_path_nodes, quota, universe_id, protagonist_name, characters_info_json, hierarchy_id):
+def _generate_recursive_story(story, current_path_nodes, quota, universe_id, protagonist_name, characters_info_json, hierarchy_id, twist_synopsis=None):
     if quota <= 0:
         print(f"    🚫 [Depth End] {hierarchy_id}: Quota reached 0. Stopping branch generation.")
         return
