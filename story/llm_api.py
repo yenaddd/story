@@ -395,7 +395,7 @@ def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, u
     
     return nodes
 
-# 전체 히스토리, 캐릭터 정보 등 모든 맥락을 입력받음
+# 노드 생성 공통 함수: 직전 장면 전문 전달 & 프롬프트 수정
 def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, universe_id, initial_history="", characters_info_json="[]"):
     phases = ["발단", "전개", "절정", "결말"]
     BATCH_SIZE = 2
@@ -403,16 +403,16 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
     created_nodes = []
     generated_count = 0
     
-    # [신규] 이번 세션에서 생성된 노드들의 히스토리를 누적 저장할 리스트
+    # 이번 세션에서 생성된 노드들의 히스토리를 누적 저장할 리스트
     current_session_history = [] 
 
     normal_node_count = count - 1 if count > 0 else 0
     
     print(f"    🔄 [Generation Plan] Total: {count} | Normal Batch: {normal_node_count} | Final Ending: 1")
 
-    # --- 내부 함수: 프롬프트 생성기 (맥락 주입의 핵심) ---
+    # --- 내부 함수: 프롬프트 생성기 ---
     def build_prompt(batch_size, is_ending=False):
-        # 1. 전체 흐름 구성 (과거 히스토리 + 현재 세션 생성분)
+        # 1. 전체 흐름 구성 (Action 포함된 히스토리)
         full_history_text = initial_history
         if current_session_history:
             session_hist_text = "\n\n".join(current_session_history)
@@ -421,47 +421,38 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
             else:
                 full_history_text = session_hist_text
         
-        # 2. 직전 상황 요약 (가장 최근 내용은 한번 더 강조)
-        prev_context_snippet = ""
+        # 2. [수정] 직전 상황 전달: 요약/발췌 없이 '전문(Full Text)' 전달
+        prev_context_full = ""
         if created_nodes:
             last = created_nodes[-1]
-            prev_context_snippet = f"...{last.content[-500:]}"
+            # [변경] 슬라이싱([-500:]) 제거 -> 전체 내용 전달
+            prev_context_full = last.content 
         elif initial_history:
-             prev_context_snippet = "(위 전체 줄거리 흐름의 마지막 부분 참조)"
+             # initial_history의 마지막 부분이 직전 노드의 전체 내용임
+             prev_context_full = "(위 '전체 줄거리 흐름'의 가장 마지막 장면을 전체 내용으로 참고하세요.)"
         
         sys = (
             f"당신은 인터랙티브 스토리 작가입니다. 주인공 '{protagonist_name}'의 시점에서 장면(Node)들을 생성하세요.\n"
             "**[입력 데이터 설명]**\n"
-            "1. **전체 줄거리 흐름**: 이야기의 시작부터 바로 직전까지의 모든 사건과 **인물들의 심경 변화**입니다. 이 흐름을 완벽하게 숙지하고 이어가세요.\n"
-            "2. **등장인물 특성**: 인물들의 고유한 성격과 특성을 반영하여 대사와 행동을 작성하세요.\n"
-            "3. **현재 시놉시스**: 이번 구간에서 진행되어야 할 핵심 줄거리입니다.\n\n"
+            "1. **전체 줄거리 흐름**: 이야기의 시작부터 직전까지의 모든 사건, **수행한 필수 행동(Action)**, 인물 심경 변화가 **요약 없이** 포함되어 있습니다. 흐름을 완벽히 숙지하세요.\n"
+            "2. **직전 장면**: 바로 앞 장면의 **전체 내용**입니다. 문맥이 끊기지 않게 자연스럽게 이어가세요.\n"
+            "3. **현재 시놉시스**: 이번 구간의 핵심 목표입니다.\n\n"
             "**[출력 필수 항목]**\n"
             "각 장면은 title, description(500자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다.\n"
         )
         
         if is_ending:
-            sys += (
-                "**[엔딩 생성 모드]**\n"
-                "주인공의 서사를 완벽하게 마무리하는 **마지막 엔딩 장면(1개)**을 작성하세요.\n"
-                "- 확실하고 닫힌 결말(Closed Ending)\n"
-                "- 500자 이상의 풍부한 분량\n"
-                "- 전체 흐름과 인물의 감정선을 통합하여 감동적인 마무리를 지으세요.\n"
-            )
+            sys += "**[엔딩 생성 모드]** 확실하고 닫힌 결말(Closed Ending)을 1개 작성하세요.\n"
             req_count_str = "1개 (엔딩)"
         else:
-            sys += (
-                f"**[일반 진행 모드]**\n"
-                f"생성할 노드 개수: **정확히 {batch_size}개**\n"
-                "이야기를 끝내지 말고, 시놉시스에 따라 자연스럽게 전개하세요.\n"
-            )
+            sys += f"**[일반 진행 모드]** 정확히 {batch_size}개의 장면을 이어서 작성하세요.\n"
             req_count_str = f"{batch_size}개"
 
-        # [핵심] 모든 맥락 정보를 상세하게 주입
         user = (
             f"### [1] 등장인물 정보 및 특성\n{characters_info_json}\n\n"
             f"### [2] 현재 적용 시놉시스\n{synopsis}\n\n"
-            f"### [3] 지금까지의 전체 줄거리 흐름 (심경 변화 포함)\n{full_history_text}\n\n"
-            f"### [4] 직전 장면 내용 (마지막 부분)\n{prev_context_snippet}\n\n"
+            f"### [3] 전체 줄거리 흐름 (행동/심경 변화 포함, 요약 없음)\n{full_history_text}\n\n"
+            f"### [4] 직전 장면 내용 (전문, Full Text)\n{prev_context_full}\n\n"
             f"--------------------------------------------------\n"
             f"위 모든 맥락을 반영하여 다음 장면들을 생성하세요.\n"
             f"요청 개수: {req_count_str}\n"
@@ -500,8 +491,8 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
 
             node = _save_node_to_db(story, scene_data, phase_name, current_depth, universe_id)
             created_nodes.append(node)
-            
-            # [중요] 생성된 노드 내용을 즉시 히스토리에 반영 (심경 변화 포함)
+
+            # 세션 히스토리 누적 시에도 '요약 없이' 전체 내용 저장
             changes_str = json.dumps(scene_data.get('character_changes', {}), ensure_ascii=False)
             hist_entry = f"[장면 {current_depth} ({phase_name})]\n내용: {node.content}"
             if changes_str and changes_str != "{}" and changes_str != "null":
@@ -567,20 +558,36 @@ def _save_node_to_db(story, scene_data, phase_name, current_depth, universe_id):
             
     return node
 
-# [신규 함수] 노드 역추적을 통해 전체 스토리 흐름과 심경 변화를 텍스트로 추출
+# 전체 히스토리 추출 함수: 행동(Action) 포함 & 전체 내용 유지
 def _get_full_history(node):
     if not node: return ""
     history_list = []
     curr = node
     while curr:
         changes = getattr(curr, 'temp_character_changes', '')
-        info = f"[장면 {curr.depth} ({curr.chapter_phase})]\n내용: {curr.content}"
+        
+        # 1. 현재 노드로 오기 위해 수행한 '필수 행동' 조회
+        action_text = ""
+        if curr.prev_node:
+            try:
+                # curr.prev_node에서 curr로 연결된 선택지(Action) 찾기
+                choice = NodeChoice.objects.filter(current_node=curr.prev_node, next_node=curr).first()
+                if choice:
+                    action_text = f"\n[▼ 수행한 행동: {choice.choice_text}]"
+            except Exception:
+                pass
+        
+        # 2. 요약 없는 전체 내용 구성
+        info = f"{action_text}\n[장면 {curr.depth} ({curr.chapter_phase})]\n내용: {curr.content}"
+        
         # 심경 변화가 있다면 함께 기록
         if changes and changes != "{}" and changes != "null":
              info += f"\n(인물 심경 변화: {changes})"
+             
         history_list.append(info)
         curr = curr.prev_node
-    # 과거 -> 현재 순으로 정렬
+        
+    # 과거 -> 현재 순으로 정렬하여 반환
     return "\n\n".join(reversed(history_list))
 
 # ==========================================
