@@ -164,14 +164,14 @@ def link_universe_to_first_scene(universe_id: str, first_scene_id: str):
 
 def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}", twist_synopsis: str = None):
     """
-    1. Relation Type 분리: GENERAL_ACTION / TWIST_ACTION
-    2. TWIST_ACTION인 경우 twist_synopsis 속성 추가
+    1. Relation Label을 동적으로 결정: 'GENERAL_ACTION' 또는 'TWIST_ACTION'
+    2. TWIST_ACTION인 경우에만 'twist_synopsis' 속성을 추가
     """
     
     # 1. Relation Type 결정
     rel_type = "TWIST_ACTION" if is_twist else "GENERAL_ACTION"
 
-    # 2. 쿼리 구성 (기본 부분)
+    # 2. 쿼리 구성
     query = f"""
     MATCH (curr:Scene {{scene_id: $curr_id}})
     MATCH (next:Scene {{scene_id: $next_id}})
@@ -193,5 +193,5 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
         "action_text": action_text, 
         "result_text": result_text,
         "character_changes": character_changes,
-        "twist_synopsis": twist_synopsis  # 파라미터 값 전달
+        "twist_synopsis": twist_synopsis
     })
