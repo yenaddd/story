@@ -395,7 +395,7 @@ def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, u
     
     return nodes
 
-# 노드 생성 공통 함수: 직전 장면 전문 전달 & 프롬프트 수정
+# 노드 생성 공통 함수: 직전 장면 전문 전달
 def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, universe_id, initial_history="", characters_info_json="[]"):
     phases = ["발단", "전개", "절정", "결말"]
     BATCH_SIZE = 2
@@ -421,11 +421,11 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
             else:
                 full_history_text = session_hist_text
         
-        # 2. [수정] 직전 상황 전달: 요약/발췌 없이 '전문(Full Text)' 전달
+        # 2. 직전 상황 전달: 요약/발췌 없이 '전문(Full Text)' 전달
         prev_context_full = ""
         if created_nodes:
             last = created_nodes[-1]
-            # [변경] 슬라이싱([-500:]) 제거 -> 전체 내용 전달
+            # 전체 내용 전달
             prev_context_full = last.content 
         elif initial_history:
              # initial_history의 마지막 부분이 직전 노드의 전체 내용임
@@ -867,6 +867,28 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
         except: pass
 
 def _generate_universe_details(setting, synopsis):
-    sys_prompt = "세계관 상세 정보 JSON 생성 (title, description, detail_description, estimated_play_time_min (int), estimated_play_time_max (int))"
-    user_prompt = f"설정: {setting}\n줄거리: {synopsis[:500]}..."
-    return call_llm(sys_prompt, user_prompt, json_format=True)
+    """
+    매력적이고 마케팅적인 제목과 설명 생성
+    """
+    sys_prompt = (
+        "당신은 베스트셀러 소설의 편집자이자 천재적인 마케터입니다. "
+        "주어진 세계관과 전체 시놉시스를 분석하여, 독자(플레이어)의 호기심을 강하게 자극하는 매력적인 정보를 JSON으로 생성하세요.\n\n"
+        "**[작성 가이드]**\n"
+        "1. **title (제목)**:\n"
+        "   - 촌스러운 설명조(예: '철수의 모험', '조선시대 좀비물')는 절대 금지입니다.\n"
+        "   - **은유적, 상징적, 시적인 표현**을 사용하여 여운과 임팩트를 주세요.\n"
+        "   - 모순된 단어의 조합이나 강렬한 이미지를 사용하세요. (예: '달빛이 닿지 않는 왕좌', '기계 심장의 고동', '내일이 없는 소녀')\n\n"
+        "2. **description (한 줄 소개)**:\n"
+        "   - 유저가 홀린 듯이 플레이 버튼을 누르게 만드는 **강력한 훅(Hook)** 문장입니다. (100자 이내)\n"
+        "   - 주인공이 처한 아이러니한 상황이나, 이야기의 가장 흥미로운 딜레마를 질문형이나 권유형으로 던지세요.\n\n"
+        "3. **detail_description (상세 소개)**:\n"
+        "   - 줄거리를 건조하게 요약하지 마세요. **영화 예고편의 내레이션**처럼 작성하세요.\n"
+        "   - 세계관의 독특한 분위기(Atmosphere)와 주인공의 시련을 강조하여 긴장감을 조성하세요.\n\n"
+        "4. **JSON 필드**: title, description, detail_description, estimated_play_time_min (int), estimated_play_time_max (int)"
+    )
+    
+    # 요약본이 아닌 '전체 시놉시스'를 전달하여 맥락 전체 파악 유도
+    user_prompt = f"세계관 설정: {setting}\n\n전체 시놉시스(Full Text): {synopsis}"
+    
+    # 온도를 약간 높여(0.7 -> 0.8) 창의적인 제목 유도
+    return call_llm(sys_prompt, user_prompt, json_format=True, temperature=0.8)
