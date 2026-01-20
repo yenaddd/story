@@ -12,3 +12,6 @@ __pycache__/
 # 기타
 /static/
 media/
+
+venv/
+.venv/
