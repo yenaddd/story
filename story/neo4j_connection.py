@@ -162,7 +162,7 @@ def link_universe_to_first_scene(universe_id: str, first_scene_id: str):
     """
     run_cypher(query, {"universe_id": universe_id, "scene_id": first_scene_id})
 
-def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}"):
+def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}", twist_synopsis: str = None):
     """
     1. Relation Type 분리: GENERAL_ACTION / TWIST_ACTION
     2. TWIST_ACTION인 경우 twist_synopsis 속성 추가
@@ -171,7 +171,7 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
     # 1. Relation Type 결정
     rel_type = "TWIST_ACTION" if is_twist else "GENERAL_ACTION"
 
-    # 2. 쿼리 구성 (Relation Type은 파라미터로 넘길 수 없으므로 f-string 사용)
+    # 2. 쿼리 구성 (기본 부분)
     query = f"""
     MATCH (curr:Scene {{scene_id: $curr_id}})
     MATCH (next:Scene {{scene_id: $next_id}})
@@ -181,6 +181,7 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
     """
 
     # 3. Twist Action일 경우 시놉시스 추가
+    # 파라미터로 받은 twist_synopsis가 있을 때만 쿼리에 추가
     if is_twist and twist_synopsis:
         query += """
         SET r.twist_synopsis = $twist_synopsis
@@ -192,5 +193,5 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
         "action_text": action_text, 
         "result_text": result_text,
         "character_changes": character_changes,
-        "twist_synopsis": twist_synopsis
+        "twist_synopsis": twist_synopsis  # 파라미터 값 전달
     })
