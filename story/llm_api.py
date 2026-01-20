@@ -295,7 +295,7 @@ def _generate_temp_synopsis(setting, cliche):
         "   (예: [주인공]은 [인물1]을 만나 사랑에 빠지지만, [인물2]의 방해를 받는다.)\n"
         "4. 이 규칙을 어기고 임의로 이름을 지으면 안 됩니다.\n\n"
         "**[작성 가이드]**\n"
-        "1. 분량은 2000자 이상.\n"
+        "1. 분량은 6000자 이상.\n"
         "2. 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.\n"
         "3. 사용자의 세계관 설정을 최대한 반영할 것."
     )
@@ -316,7 +316,7 @@ def _generate_temp_synopsis(setting, cliche):
     )
     
     # 일반 텍스트 모드로 생성
-    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=16000)
 
 def _generate_detailed_world_setting(user_input, synopsis):
     """
@@ -858,7 +858,7 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
 def _generate_twisted_synopsis_data(story, acc_content, phase, characters_info_json):
     sys_prompt = (
         "기존 스토리의 흐름을 비틀어 새로운 결말로 향하는 'Twist Synopsis'를 작성하세요.\n"
-        "1. 분량은 2000자 이상.\n"
+        "1. 분량은 6000자 이상.\n"
         "2. **제공된 모든 주요 등장인물의 성격과 특성을 전부 수정사항 없이 반영하여 스토리 흐름의 입체적인 변화를 주세요.**\n"
         "3. 단순히 상황만 꼬는 것이 아니라, **확실한 결말(Closed Ending)**을 맺어야 합니다.\n"
         "4. 등장인물의 특성을 임의로 변경하면 안됩니다. twist synopsis는 모든 등장인물의 성격, 특성을 전부 고려하였을 때 말이 되도록 작성해야 합니다. (ex.재벌결혼을 주장하는 아버지가 갑자기 진정한 사랑이라는 이유로 결혼을 허락하면 안됨. 인물의 신념에 위배.)"
@@ -870,7 +870,7 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, characters_info_j
         "위 정보를 바탕으로 완결된 형태의 비틀린 시놉시스를 작성해주세요."
         "기존의 시놉시스에서 과도하게 벗어나지 말고, 약간만 결과를 바꿔주세요."
     )
-    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000, timeout=300)
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=16000, timeout=300)
 
 def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text, twist_synopsis=None):
     sys_prompt = (
