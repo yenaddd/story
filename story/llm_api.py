@@ -116,7 +116,7 @@ def _clean_data_recursive(data):
 
 def _generate_name_candidates(setting, genre_name):
     """
-    [신규] 장르와 설정을 분석하여 어울리는 캐릭터 이름 후보를 생성하는 함수
+    장르와 설정을 분석하여 어울리는 캐릭터 이름 후보를 생성하는 함수
     """
     # 장르별 가이드 가져오기 (없으면 기본값)
     naming_style = GENRE_NAMING_GUIDE.get(genre_name, "해당 장르의 인기 작품 주인공들의 작명 센스를 참고하여 독창적인 이름을 지으세요.")
@@ -758,11 +758,11 @@ def _extract_characters_info(synopsis, protagonist_info):
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
     sys_prompt = (
-        f"주인공 '{protagonist_name}'이 **'현재 장면'의 서술이 모두 끝난 직후**, 다음 장면으로 넘어가기 위해 취해야 할 행동을 정의하세요.\n"
+        f"주인공 '{protagonist_name}'이 **'현재 장면'의 서술이 모두 끝난 직후**, 다음 장면으로 넘어가기 위해 취해야 할 행동을 정의하세요. 꼭 '{protagonist_name}'이 주체여야 합니다.\n"
         "1. **[중요] 시점 원칙**: '현재 장면'에 서술된 내용은 이미 다 일어난 일입니다. 행동은 그 **이후**에 벌어질 일이어야 합니다.\n"
         "2. **[중요] 중복 금지**: 현재 장면 본문에 이미 묘사된 행위(예: 짐을 풀었다, 대화를 나눴다 등)를 다시 행동으로 제시하지 마세요.\n"
-        "3. 행동은 구체적이지 않고 직관적이어야 합니다. (예: '방을 나선다', '대답한다', '주위를 살핀다')\n"
-        "4. 행동의 결과(result)는 다음 장면의 첫 문장과 자연스럽게 이어져야 합니다."
+        "3. 행동은 구체적이지 않고 단순하고 직관적이어야 합니다. (예: '방을 나선다', '대답한다', '주위를 살핀다')\n"
+        "4. 행동의 결과(result)는 다음 장면의 첫 문장과 내용상 자연스럽게 이어져야 합니다."
     )
     
     for i in range(len(nodes) - 1):
@@ -774,13 +774,13 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         next_n.save()
         
         user_prompt = (
-            f"### [1] 현재 장면 (이미 완료된 상황)\n{curr.content[-500:]}\n"
+            f"### [1] 현재 장면 (이미 완료된 상황)\n{curr.content}\n"
             f"(설명: 위 내용은 이미 진행되었습니다. 주인공은 이 상황 끝에 놓여 있습니다.)\n\n"
-            f"### [2] 다음 장면 (이어질 내용의 시작)\n{next_n.content[:300]}...\n\n"
+            f"### [2] 다음 장면 (이어질 내용)\n{next_n.content}...\n\n"
             f"--------------------------------------------------\n"
             f"위 두 장면 사이를 연결하는 '유저 행동(Action)'과 '그 직후의 결과(Result)'를 생성하세요.\n"
             f"Q: 현재 장면의 상황이 모두 끝난 후, 주인공이 무엇을 해야 다음 장면으로 넘어갑니까?\n"
-            f"출력 JSON: {{'action': '유저가 할 행동', 'result': '행동 직후 묘사(다음 장면 도입부)'}}"
+            f"출력 JSON: {{'action': '유저가 할 행동', 'result': '행동 직후 묘사(다음 장면 도입부와 이어지는 내용)'}}"
         )
         
         res = call_llm(sys_prompt, user_prompt, json_format=True)
@@ -812,21 +812,23 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, characters_info_j
     sys_prompt = (
         "기존 스토리의 흐름을 비틀어 새로운 결말로 향하는 'Twist Synopsis'를 작성하세요.\n"
         "1. 분량은 2000자 이상.\n"
-        "2. **제공된 모든 주요 등장인물의 성격과 특성을 반영하여 입체적인 변화를 주세요.**\n"
-        "3. 단순히 상황만 꼬는 것이 아니라, **확실한 결말(Closed Ending)**을 맺어야 합니다."
+        "2. **제공된 모든 주요 등장인물의 성격과 특성을 전부 수정사항 없이 반영하여 스토리 흐름의 입체적인 변화를 주세요.**\n"
+        "3. 단순히 상황만 꼬는 것이 아니라, **확실한 결말(Closed Ending)**을 맺어야 합니다.\n"
+        "4. 등장인물의 특성을 임의로 변경하면 안됩니다. twist synopsis는 모든 등장인물의 성격, 특성을 전부 고려하였을 때 말이 되도록 작성해야 합니다. (ex.재벌결혼을 주장하는 아버지가 갑자기 진정한 사랑이라는 이유로 결혼을 허락하면 안됨. 인물의 신념에 위배.)"
     )
     user_prompt = (
-        f"현재까지 진행된 이야기: {acc_content[-1000:]}\n"
+        f"현재까지 진행된 이야기: {acc_content}\n"
         f"현재 단계: {phase} (이 지점부터 이야기가 달라집니다)\n"
         f"등장인물 상세 정보: {characters_info_json}\n\n"
         "위 정보를 바탕으로 완결된 형태의 비틀린 시놉시스를 작성해주세요."
+        "기존의 시놉시스에서 과도하게 벗어나지 말고, 약간만 결과를 바꿔주세요."
     )
     return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000, timeout=300)
 
 def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text, twist_synopsis=None):
     sys_prompt = (
         f"현재 장면이 끝난 시점에서, 이야기가 완전히 다른 방향(반전)으로 흐르기 위해 "
-        f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 정의하세요.\n"
+        f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적인 조건 행동(Twist Action)**을 정의하세요.\n"
         "1. '현재 장면'에 이미 나온 내용은 행동으로 쓰지 마세요. 행동은 현재 장면이 끝난 **다음**에 발생합니다.\n"
         "2. 기존의 정석적인 행동과는 의도가 명확히 달라야 합니다.\n"
         "3. 행동의 결과(result)는 반전된 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다."
