@@ -215,22 +215,28 @@ def create_story_pipeline(user_world_setting):
     """
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
+    # [Step 1] 클리셰 및 장르 매칭 (Raw Setting 기반)
+    print("  [Step 1] Analyzing Genre & Matching Cliche...")
+    matched_cliche = _match_cliche(user_world_setting)
+    current_genre_name = matched_cliche.genre.name
+    print(f"  -> Matched Genre: {current_genre_name} / Cliche: {matched_cliche.title}")
 
-    # 1. 설정 구체화 및 주인공 정의
-    refined_setting, protagonist_info = _refine_setting_and_protagonist(user_world_setting)
+    # [Step 2] 결정된 장르 정보를 바탕으로 설정 구체화 및 주인공 생성
+    print("  [Step 2] Refining Setting & Defining Protagonist...")
+    refined_setting, protagonist_info = _refine_setting_and_protagonist(user_world_setting, genre_name=current_genre_name)
     protagonist_name = protagonist_info['name']
-    print(f"✅ Protagonist: {protagonist_name}")
+    print(f"  -> Refined Setting Length: {len(refined_setting)}")
+    print(f"  -> Protagonist: {protagonist_name}")
 
     try:
         create_universe_node_neo4j(universe_id, refined_setting, protagonist_name)
     except: pass
 
-    # 2. 클리셰 매칭
-    matched_cliche = _match_cliche(refined_setting)
+    # DB 저장 (순서 변경에 맞춰 조정)
     story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
     
-    print(f"  [Step 2.5] Generating Creative Names based on [{matched_cliche.genre.name}] style...")
-    name_candidates = _generate_name_candidates(refined_setting, matched_cliche.genre.name)
+    print(f"  [Step 2.5] Generating Creative Names based on [{current_genre_name}] style...")
+    name_candidates = _generate_name_candidates(refined_setting, current_genre_name)
     print(f"-> Recommended Names: {name_candidates}")
 
     # 3. 메인 시놉시스 생성
@@ -691,8 +697,27 @@ def _match_cliche(setting):
     except:
         return random.choice(list(cliches))
 
-def _refine_setting_and_protagonist(raw_setting):
-    naming_guide_str = json.dumps(GENRE_NAMING_GUIDE, ensure_ascii=False)
+def _refine_setting_and_protagonist(raw_setting, genre_name=None):
+    """
+    설정과 장르를 받아 세계관을 구체화하고 주인공을 생성합니다.
+    """
+    # 1. 장르별 작명 가이드 선택
+    if genre_name and genre_name in GENRE_NAMING_GUIDE:
+        # 특정 장르가 지정된 경우 해당 가이드만 사용
+        selected_guide = GENRE_NAMING_GUIDE[genre_name]
+        naming_instruction = (
+            f"3. **[필수] 주인공 이름 생성 규칙**: \n"
+            f"   - 현재 장르는 **'{genre_name}'**입니다.\n"
+            f"   - 다음 작명 스타일을 반드시 따르세요: {selected_guide}\n"
+        )
+    else:
+        # 장르 미정 시 전체 가이드 참고 (기존 방식 fallback)
+        naming_guide_str = json.dumps(GENRE_NAMING_GUIDE, ensure_ascii=False)
+        naming_instruction = (
+            f"3. **주인공 이름 생성 규칙**: \n"
+            f"   - 입력된 설정의 분위기를 분석하여 가장 적절한 장르 스타일을 선택하세요.\n"
+            f"   - 참고 가이드: {naming_guide_str}\n"
+        )
 
     sys_prompt = (
         "당신은 웹소설 기획자입니다. 사용자의 입력을 분석하여 세계관을 구체화하고, 그에 가장 잘 어울리는 매력적인 주인공을 정의하세요.\n\n"
@@ -707,7 +732,7 @@ def _refine_setting_and_protagonist(raw_setting):
         f"사용자 입력: {raw_setting}\n"
         "출력 JSON: {'refined_setting': '구체화된 세계관', 'protagonist': {'name': '이름', 'desc': '성격, 믿음, 사상, 외모 포함 상세 묘사'}}"
     )
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
+    res = call_llm(sys_prompt, user_prompt, json_format=True, temperature=0.8)
     return res.get('refined_setting', raw_setting), res.get('protagonist', {'name':'이안', 'desc':'평범함'})
 
 def _generate_synopsis(story, cliche, p_name, p_desc, name_candidates=[], include_example=False):
