@@ -812,7 +812,7 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, characters_info_j
     )
     return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000, timeout=300)
 
-def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text):
+def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text, twist_synopsis=None):
     sys_prompt = (
         f"현재 장면에서 이야기가 완전히 다른 방향(반전)으로 흐르기 위해, "
         f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 정의하세요.\n"
