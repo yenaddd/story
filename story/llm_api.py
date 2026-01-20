@@ -153,8 +153,9 @@ def create_story_pipeline(user_world_setting):
     """
     1. 유저 인풋 기반 클리셰 매칭
     2. [주인공], [인물1]... 임시 이름을 사용하여 시놉시스 생성
-    3. 생성된 시놉시스에 맞춰 인물 상세 프로필(10가지 항목) 생성
-    4. 시놉시스의 임시 이름을 실제 이름으로 치환하여 최종 저장
+    3. [신규] 시놉시스와 인풋을 기반으로 세계관 세부 설정(시공간, 규칙, 문화) 생성
+    4. 생성된 시놉시스와 세계관 설정을 반영하여 인물 상세 프로필 생성
+    5. 시놉시스의 임시 이름을 실제 이름으로 치환하여 최종 저장
     """
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
@@ -170,9 +171,18 @@ def create_story_pipeline(user_world_setting):
     temp_synopsis = _generate_temp_synopsis(user_world_setting, matched_cliche)
     print(f"  -> Temp Synopsis Generated (Length: {len(temp_synopsis)})")
 
-    # [Step 3] 시놉시스 기반 캐릭터 상세 생성 (10가지 항목 포함)
-    print("  [Step 3] Creating Detailed Characters based on Synopsis...")
-    character_map_list = _generate_character_mapping(temp_synopsis, current_genre_name)
+    # [Step 2.5] 세계관 세부 설정 생성 (신규 추가)
+    print("  [Step 2.5] Generating Detailed World Settings...")
+    detailed_world_setting = _generate_detailed_world_setting(user_world_setting, temp_synopsis)
+    
+    # Neo4j 저장을 위해 JSON 문자열로 변환
+    world_setting_json_str = json.dumps(detailed_world_setting, ensure_ascii=False)
+    print("  -> World Settings Generated.")
+
+    # [Step 3] 시놉시스 + 세계관 설정 기반 캐릭터 상세 생성
+    print("  [Step 3] Creating Detailed Characters based on Synopsis & World Context...")
+    # 인자에 detailed_world_setting 추가
+    character_map_list = _generate_character_mapping(temp_synopsis, current_genre_name, detailed_world_setting)
     
     # 데이터 처리 및 주인공 정보 추출
     protagonist_name = "주인공"
@@ -182,7 +192,7 @@ def create_story_pipeline(user_world_setting):
     for char in character_map_list:
         placeholder = char.get('placeholder')
         real_name = char.get('real_name')
-        profile = char.get('profile', {}) # 상세 프로필 딕셔너리
+        profile = char.get('profile', {}) 
         
         # 1. 이름 치환 맵핑
         if placeholder and real_name:
@@ -190,12 +200,11 @@ def create_story_pipeline(user_world_setting):
             if placeholder == "[주인공]":
                 protagonist_name = real_name
 
-        # 2. DB/Neo4j 저장용 리스트 구성 (상세 정보를 모두 포함)
-        # LLM에게 제공할 때는 JSON 구조 그대로 전달하는 것이 가장 좋습니다.
+        # 2. DB/Neo4j 저장용 리스트 구성
         characters_info_for_db.append({
             "name": real_name,
-            "role": placeholder, # [주인공] or [인물1] 등
-            "profile": profile   # 10가지 항목이 들어있는 딕셔너리
+            "role": placeholder,
+            "profile": profile
         })
 
     print(f"  -> Protagonist Defined: {protagonist_name}")
@@ -211,15 +220,18 @@ def create_story_pipeline(user_world_setting):
     story.synopsis = final_synopsis
     story.save()
 
-    # Neo4j Universe 생성
+    # Neo4j Universe 생성 (world_setting 대신 상세 설정 JSON 전달)
     try:
-        create_universe_node_neo4j(universe_id, user_world_setting, protagonist_name)
-    except: pass
+        # 기존 user_world_setting 대신 상세 생성된 world_setting_json_str을 저장
+        create_universe_node_neo4j(universe_id, world_setting_json_str, protagonist_name)
+    except Exception as e:
+        print(f"⚠️ Neo4j Universe Creation Failed: {e}")
+        pass
 
     # 캐릭터 정보 JSON 변환
     characters_info_json = json.dumps(characters_info_for_db, ensure_ascii=False)
 
-    # 3.5 Neo4j 업데이트
+    # 3.5 Neo4j 업데이트 (Universe Details)
     universe_details = _generate_universe_details(user_world_setting, final_synopsis)
     try:
         update_universe_details_neo4j(
@@ -306,29 +318,59 @@ def _generate_temp_synopsis(setting, cliche):
     # 일반 텍스트 모드로 생성
     return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
 
+def _generate_detailed_world_setting(user_input, synopsis):
+    """
+    시놉시스와 유저 인풋을 기반으로 구체적인 세계관 세부 사항을 JSON으로 생성합니다.
+    """
+    sys_prompt = (
+        "당신은 세계관 설정(World Building) 전문가입니다. "
+        "사용자의 기초 설정과 앞서 생성된 시놉시스를 철저히 분석하여, 이야기가 진행될 세계의 **구체적이고 입체적인 세부 설정**을 확장하세요.\n\n"
+        "**[생성해야 할 3가지 카테고리]**\n"
+        "1. **시공간 설정 (time_space)**: 시대적 배경(역사), 지리적 특성(지역명, 기후, 생태계), 해당 세계만의 물리 법칙 등.\n"
+        "2. **법과 규칙 (laws_rules)**: 통치 체제, 핵심 법률, 마법/기술의 구동 원리 및 한계, 사회 계급 구조.\n"
+        "3. **문화 및 가치관 (culture_values)**: 종교, 지배적인 철학, 도덕 관념, 전통/풍습, 종족적 특성, 세계를 바라보는 관점.\n\n"
+        "**[출력 규칙]**\n"
+        "- 반드시 아래 JSON 포맷을 준수하세요.\n"
+        "- 내용은 추상적이지 않고 구체적이어야 합니다. (예: '마법이 있다' -> '마나를 혈관에 순환시켜 발동하며 과다 사용 시 혈관이 파열된다')\n"
+        "- 시놉시스 사건의 개연성을 뒷받침해야 합니다."
+    )
+    
+    user_prompt = (
+        f"### [1] 사용자 기초 설정\n{user_input}\n\n"
+        f"### [2] 전체 시놉시스\n{synopsis}\n\n"
+        f"----------------------------------------\n"
+        f"위 내용을 바탕으로 세계관 세부 설정을 JSON으로 생성하세요.\n"
+        f"JSON 키: time_space, laws_rules, culture_values"
+    )
+
+    return call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=4000)
+
 
 def _generate_character_mapping(synopsis, genre_name):
     """
-    시놉시스를 분석하여 등장인물의 10가지 상세 프로필(이름, 성격, 신념 등)을 생성합니다.
+    시놉시스와 '세계관 세부 설정'을 반영하여 인물 프로필을 생성합니다.
     """
     naming_style = GENRE_NAMING_GUIDE.get(genre_name, "장르에 어울리는 매력적인 이름")
-    
+    world_context_str = json.dumps(world_details, ensure_ascii=False, indent=2)
+
     sys_prompt = (
         "당신은 캐릭터 메이킹 전문가입니다. "
-        "주어진 시놉시스에 등장하는 **임시 인물들([주인공], [인물1]...)**의 행적과 역할을 깊이 있게 분석하여, "
-        "가장 잘 어울리는 **실제 이름**과 **상세 프로필**을 창조하세요.\n\n"
+        "시놉시스와 **확장된 세계관 설정**을 깊이 있게 분석하여, "
+        "등장인물([주인공], [인물1]...)들에게 **실제 이름**과 **상세 프로필**을 부여하세요.\n\n"
+        "**[중요: 세계관 반영]**\n"
+        "캐릭터의 직업, 신념, 특기 등은 반드시 **제공된 세계관(법칙, 문화, 종족 특성)**과 밀접하게 연관되어야 합니다.\n"
+        "(예: 마법이 금지된 세계라면 -> 신념: '마법 자유화', 특기: '숨겨진 마나 제어')\n\n"
         "**[필수 상세 항목 (10가지)]**\n"
-        "각 인물에 대해 다음 정보를 구체적이고 입체적으로 서술하세요:\n"
         "1. **이름**: 장르에 어울리는 이름 (가이드 참고)\n"
         "2. **성격**: MBTI나 구체적인 성향 묘사\n"
-        "3. **신념**: 삶을 살아가는 원동력이나 절대적인 믿음\n"
-        "4. **목표**: 스토리 내에서 이루고자 하는 궁극적 목표\n"
-        "5. **가치관**: 중요하게 여기는 가치 (예: 정의, 가족, 돈)\n"
-        "6. **인간관계 스타일**: 타인을 대하는 태도나 방식\n"
-        "7. **좋아하는 것 (Likes)**\n"
-        "8. **싫어하는 것 (Dislikes)**\n"
-        "9. **취미**: 일상적인 취미\n"
-        "10. **특기**: 스토리 해결에 도움이 되는 능력\n\n"
+        "3. **신념**: 삶을 살아가는 원동력 (세계관 가치관 반영)\n"
+        "4. **목표**: 스토리 내 목표\n"
+        "5. **가치관**: 중요하게 여기는 가치\n"
+        "6. **인간관계 스타일**: 타인을 대하는 태도\n"
+        "7. **좋아하는 것**\n"
+        "8. **싫어하는 것**\n"
+        "9. **취미**: 세계관 내에서 가능한 취미\n"
+        "10. **특기**: 스토리 해결 능력 (세계관 기술/마법 반영)\n\n"
         f"**[작명 가이드]**: {naming_style}\n\n"
         "**[출력 형식]**\n"
         "반드시 아래 JSON 리스트 포맷을 준수하세요:\n"
@@ -351,7 +393,11 @@ def _generate_character_mapping(synopsis, genre_name):
         "]"
     )
     
-    user_prompt = f"시놉시스 내용:\n{synopsis}"
+    user_prompt = (
+        f"### [1] 세계관 세부 설정 (Context)\n{world_context_str}\n\n"
+        f"### [2] 시놉시스\n{synopsis}\n\n"
+        "위 세계관 속에서 살아 숨 쉬는 입체적인 캐릭터들을 생성하세요."
+    )
     
     # JSON 모드로 호출
     res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=4000)
