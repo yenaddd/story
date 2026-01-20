@@ -61,7 +61,7 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
     ON CREATE SET 
         u.setting = $world_setting,
         u.protagonist_name = $protagonist_name,
-        u.experimental = false,
+        u.experimental = true,
         u.representative_image = "",  // 이미지 링크 빈 필드
         u.created_at = datetime()
     ON MATCH SET 
