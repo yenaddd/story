@@ -319,7 +319,6 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
             
         print(f"      📌 Twist Point Found: Node {target_node.id} ({target_node.chapter_phase})")
 
-        # [수정] 전체 히스토리(심경 변화 포함) 가져오기
         history_context = _get_full_history(target_node)
         
         twisted_synopsis = _generate_twisted_synopsis_data(
@@ -334,7 +333,6 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
                 )
                 
         print(f"      📝 Generating Nodes for [{current_branch_num}] ...")
-        # [수정] characters_info_json 전달
         new_branch_nodes = _generate_path_segment(
             story, twisted_synopsis, protagonist_name,
             start_node=target_node, universe_id=universe_id, is_twist_branch=True,
@@ -344,8 +342,15 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
         if new_branch_nodes:
             original_choice = target_node.choices.first()
             original_action = original_choice.choice_text if original_choice else "원래대로 진행"
-            _create_twist_condition(target_node, new_branch_nodes[0], universe_id, protagonist_name, original_action)
-
+            _create_twist_condition(
+                target_node, 
+                new_branch_nodes[0], 
+                universe_id, 
+                protagonist_name, 
+                original_action,
+                twist_synopsis=twisted_synopsis 
+            )
+            
             next_quota = quota - 1
             if next_quota > 0:
                 print(f"      ↘️ Recursing into [{current_branch_num}] with quota {next_quota} (DFS)...")
@@ -844,7 +849,8 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
                 action_text, 
                 result_text, 
                 is_twist=True,
-                character_changes=twist_changes
+                character_changes=twist_changes,
+                twist_synopsis=twist_synopsis 
             )
         except: pass
 

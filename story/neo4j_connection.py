@@ -164,25 +164,33 @@ def link_universe_to_first_scene(universe_id: str, first_scene_id: str):
 
 def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}"):
     """
-    Scene 간의 연결을 'ACTION'으로 통일하고, 
-    type 속성을 통해 'normal'와 'twist'를 구분합니다.
-    기존 action_text 내용은 action 속성에 저장됩니다.
+    1. Relation Type 분리: GENERAL_ACTION / TWIST_ACTION
+    2. TWIST_ACTION인 경우 twist_synopsis 속성 추가
     """
-    action_type = "twist" if is_twist else "normal"
+    
+    # 1. Relation Type 결정
+    rel_type = "TWIST_ACTION" if is_twist else "GENERAL_ACTION"
 
+    # 2. 쿼리 구성 (Relation Type은 파라미터로 넘길 수 없으므로 f-string 사용)
     query = f"""
     MATCH (curr:Scene {{scene_id: $curr_id}})
     MATCH (next:Scene {{scene_id: $next_id}})
-    MERGE (curr)-[r:ACTION {{action: $action_text}}]->(next)
-    SET r.type = $action_type,
-        r.result_text = $result_text,
+    MERGE (curr)-[r:{rel_type} {{action: $action_text}}]->(next)
+    SET r.result_text = $result_text,
         r.character_changes = $character_changes
     """
+
+    # 3. Twist Action일 경우 시놉시스 추가
+    if is_twist and twist_synopsis:
+        query += """
+        SET r.twist_synopsis = $twist_synopsis
+        """
+
     run_cypher(query, {
         "curr_id": curr_id, 
         "next_id": next_id, 
         "action_text": action_text, 
         "result_text": result_text,
-        "character_changes": character_changes, # 이전 노드 대비 변화 JSON string
-        "action_type": action_type  # normal or twist
+        "character_changes": character_changes,
+        "twist_synopsis": twist_synopsis
     })
