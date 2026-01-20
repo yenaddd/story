@@ -346,7 +346,7 @@ def _generate_detailed_world_setting(user_input, synopsis):
     return call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=4000)
 
 
-def _generate_character_mapping(synopsis, genre_name):
+def _generate_character_mapping(synopsis, genre_name, world_details):
     """
     시놉시스와 '세계관 세부 설정'을 반영하여 인물 프로필을 생성합니다.
     """
