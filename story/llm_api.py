@@ -146,7 +146,7 @@ def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_to
     return {} if json_format else ""
 
 # ==========================================
-# [메인 파이프라인] - 순서 변경
+# [메인 파이프라인]
 # ==========================================
 
 def create_story_pipeline(user_world_setting):
@@ -266,7 +266,7 @@ def create_story_pipeline(user_world_setting):
 
 
 # ==========================================
-# [신규 함수] 시놉시스 및 캐릭터 생성 로직
+# 시놉시스 및 캐릭터 생성 로직
 # ==========================================
 
 def _generate_temp_synopsis(setting, cliche):
@@ -363,10 +363,6 @@ def _generate_character_mapping(synopsis, genre_name):
     else:
         return []
 
-
-# ==========================================
-# [기타 로직 함수들] (기존 함수 유지/수정)
-# ==========================================
 
 def _match_cliche(setting):
     all_genres = Genre.objects.all()
