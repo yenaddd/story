@@ -725,7 +725,7 @@ def _refine_setting_and_protagonist(raw_setting, genre_name=None):
         "1. **Refined Setting (세계관 구체화)**: 사용자의 설정을 바탕으로 장르적 특색(판타지, 로맨스, SF, 무협 등)을 살려 흥미롭게 서술하세요.\n"
         "2. **Protagonist (주인공 정의)**: 이름, 성격, 신념, 외모를 구체적으로 묘사하세요.\n"
         "   - **[중요] 이름 생성 규칙**: 분석된 장르에 맞춰 아래 가이드를 참고하여 **가장 창의적이고 분위기에 맞는 이름**을 지으세요.\n"
-        f"   - **장르별 작명 가이드**: {naming_guide_str}\n"
+        f"{naming_instruction}"
         "   - 흔한 이름(김철수, 이영희 등)은 절대 금지입니다. 주인공다운 독창적인 이름을 사용하세요."
     )
     user_prompt = (
