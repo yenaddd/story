@@ -1,3 +1,5 @@
+# story/llm_api.py
+
 import os
 import json
 import time
@@ -24,7 +26,6 @@ MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1"
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 # 공통 제약 조건 상수
-#KOREAN_ONLY_RULE = "출력은 고유명사(지명, 인명 등 불가피한 경우)를 제외하고는 반드시 '한국어'로 작성해야 합니다. 영어를 섞어 쓰지 마세요."
 KOREAN_ONLY_RULE = """
 [필수 규칙]
 [Output Rules]
@@ -33,6 +34,7 @@ KOREAN_ONLY_RULE = """
 3. Do NOT use Chinese characters.
 4. Exception: Keep Proper Nouns (Names like 'V', 'Silverhand') in English if necessary.
 """
+
 # ==========================================
 # [설정 변수: 스토리 구조 제어]
 # ==========================================
@@ -70,40 +72,18 @@ GENRE_NAMING_GUIDE = {
 }
 
 def _clean_text_value(text):
-    """
-    [스마트 필터링] 문자열 값에서만 불필요한 외국어를 제거합니다.
-    """
-    if not isinstance(text, str):
-        return text
-
-    # 1. 한자(Chinese) 및 일본어 등 제거 (범위 확대)
-    # \u4e00-\u9fff (한자), \u3040-\u30ff (일본어)
+    if not isinstance(text, str): return text
     text = re.sub(r'[\u4e00-\u9fff\u3040-\u30ff]+', '', text)
-    
-    # 2. 괄호 안의 영어 제거 (예: (System), (Love)) -> 보통 번역 후 병기하는 경우라 삭제해도 무방
     text = re.sub(r'\([A-Za-z\s]+\)', '', text)
-
-    # 3. 소문자로 시작하는 영어 단어 제거 (동사, 일반명사 등)
-    # 예: "pushed되었다" -> "되었다", "consciousness가" -> "가"
-    # 예외: "V", "Silverhand" 처럼 대문자로 시작하는 고유명사는 남김
     def _remove_lowercase_english(match):
         word = match.group()
-        # 첫 글자가 소문자면 삭제, 대문자면 유지
-        if word[0].islower():
-            return ""
+        if word[0].islower(): return ""
         return word
-
     text = re.sub(r'[A-Za-z]+', _remove_lowercase_english, text)
-    
-    # 4. 불필요한 공백 정리
     text = re.sub(r'\s+', ' ', text).strip()
-    
     return text
 
 def _clean_data_recursive(data):
-    """
-    JSON 데이터의 구조는 건드리지 않고, 내부의 '문자열 값'만 찾아서 청소합니다.
-    """
     if isinstance(data, dict):
         return {k: _clean_data_recursive(v) for k, v in data.items()}
     elif isinstance(data, list):
@@ -113,35 +93,8 @@ def _clean_data_recursive(data):
     else:
         return data
 
-
-def _generate_name_candidates(setting, genre_name):
-    """
-    장르와 설정을 분석하여 어울리는 캐릭터 이름 후보를 생성하는 함수
-    """
-    # 장르별 가이드 가져오기 (없으면 기본값)
-    naming_style = GENRE_NAMING_GUIDE.get(genre_name, "해당 장르의 인기 작품 주인공들의 작명 센스를 참고하여 독창적인 이름을 지으세요.")
-    
-    sys_prompt = (
-        "당신은 소설 캐릭터 네이밍 전문가입니다. "
-        "주어진 '세계관'과 '장르'를 분석하여, 그에 가장 잘 어울리는 **매력적이고 독창적인 캐릭터 이름 6개**를 제안하세요.\n"
-        "1. 흔한 이름(김철수, 이영희 등)은 절대 금지입니다.\n"
-        f"2. 작명 스타일 가이드: {naming_style}\n"
-        "3. 출력 형식: JSON {'names': ['이름1', '이름2', ...]}"
-    )
-    
-    user_prompt = f"장르: {genre_name}\n세계관: {setting}"
-    
-    try:
-        # 온도를 높여(0.8) 창의적인 이름이 나오도록 유도
-        res = call_llm(sys_prompt, user_prompt, json_format=True, temperature=0.8) 
-        return res.get('names', [])
-    except:
-        return []
-
 def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=300, temperature=0.7):
-    # 시스템 프롬프트에 한국어 제약 조건 추가
     full_system_prompt = f"{system_prompt}\n\n{KOREAN_ONLY_RULE}"    
-
     messages = [{"role": "system", "content": full_system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
     
@@ -171,31 +124,18 @@ def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_to
             else:
                 content = response.choices[0].message.content
 
-            
-            '''
             if json_format:
-                cleaned = content.replace("```json", "").replace("```", "").strip()
-                return json.loads(cleaned)
-            return content
-            '''
-            if json_format:
-                # 1. 일단 JSON 파싱 (영어 키값 보존을 위해)
                 cleaned_str = content.replace("```json", "").replace("```", "").strip()
                 try:
                     parsed_data = json.loads(cleaned_str)
                 except json.JSONDecodeError:
-                    # 파싱 실패 시, 혹시 모를 문자열 끝부분 잘림 등을 보정하여 재시도
                     end_idx = cleaned_str.rfind("}")
                     if end_idx != -1:
                          parsed_data = json.loads(cleaned_str[:end_idx+1])
                     else:
                         raise
-
-                # 2. 파싱된 데이터 내부의 값만 청소 (Recursive)
                 return _clean_data_recursive(parsed_data)
-            
             else:
-                # 일반 텍스트는 바로 청소
                 return _clean_text_value(content)
 
         except Exception as e:
@@ -206,53 +146,85 @@ def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_to
     return {} if json_format else ""
 
 # ==========================================
-# [메인 파이프라인]
+# [메인 파이프라인] - 순서 변경
 # ==========================================
 
 def create_story_pipeline(user_world_setting):
     """
-    스토리 생성 전체 파이프라인 (Action 기반)
+    1. 유저 인풋 기반 클리셰 매칭
+    2. [주인공], [인물1]... 임시 이름을 사용하여 시놉시스 생성
+    3. 생성된 시놉시스에 맞춰 인물 상세 프로필(10가지 항목) 생성
+    4. 시놉시스의 임시 이름을 실제 이름으로 치환하여 최종 저장
     """
     universe_id = str(uuid.uuid4())
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
-    # [Step 1] 클리셰 및 장르 매칭 (Raw Setting 기반)
+
+    # [Step 1] 클리셰 및 장르 매칭
     print("  [Step 1] Analyzing Genre & Matching Cliche...")
     matched_cliche = _match_cliche(user_world_setting)
     current_genre_name = matched_cliche.genre.name
     print(f"  -> Matched Genre: {current_genre_name} / Cliche: {matched_cliche.title}")
 
-    # [Step 2] 결정된 장르 정보를 바탕으로 설정 구체화 및 주인공 생성
-    print("  [Step 2] Refining Setting & Defining Protagonist...")
-    refined_setting, protagonist_info = _refine_setting_and_protagonist(user_world_setting, genre_name=current_genre_name)
-    protagonist_name = protagonist_info['name']
-    print(f"  -> Refined Setting Length: {len(refined_setting)}")
-    print(f"  -> Protagonist: {protagonist_name}")
+    # [Step 2] 임시 이름을 사용한 시놉시스 생성
+    print("  [Step 2] Generating Synopsis with Temporary Names...")
+    temp_synopsis = _generate_temp_synopsis(user_world_setting, matched_cliche)
+    print(f"  -> Temp Synopsis Generated (Length: {len(temp_synopsis)})")
 
-    try:
-        create_universe_node_neo4j(universe_id, refined_setting, protagonist_name)
-    except: pass
-
-    # DB 저장 (순서 변경에 맞춰 조정)
-    story = Story.objects.create(user_world_setting=refined_setting, main_cliche=matched_cliche)
+    # [Step 3] 시놉시스 기반 캐릭터 상세 생성 (10가지 항목 포함)
+    print("  [Step 3] Creating Detailed Characters based on Synopsis...")
+    character_map_list = _generate_character_mapping(temp_synopsis, current_genre_name)
     
-    print(f"  [Step 2.5] Generating Creative Names based on [{current_genre_name}] style...")
-    name_candidates = _generate_name_candidates(refined_setting, current_genre_name)
-    print(f"-> Recommended Names: {name_candidates}")
+    # 데이터 처리 및 주인공 정보 추출
+    protagonist_name = "주인공"
+    name_map = {}
+    characters_info_for_db = []
+    
+    for char in character_map_list:
+        placeholder = char.get('placeholder')
+        real_name = char.get('real_name')
+        profile = char.get('profile', {}) # 상세 프로필 딕셔너리
+        
+        # 1. 이름 치환 맵핑
+        if placeholder and real_name:
+            name_map[placeholder] = real_name
+            if placeholder == "[주인공]":
+                protagonist_name = real_name
 
-    # 3. 메인 시놉시스 생성
-    print("  [Step 3] Generating Root Synopsis...")
-    root_synopsis = _generate_synopsis(story, matched_cliche, protagonist_name, protagonist_info['desc'], include_example=True)
-    story.synopsis = root_synopsis
+        # 2. DB/Neo4j 저장용 리스트 구성 (상세 정보를 모두 포함)
+        # LLM에게 제공할 때는 JSON 구조 그대로 전달하는 것이 가장 좋습니다.
+        characters_info_for_db.append({
+            "name": real_name,
+            "role": placeholder, # [주인공] or [인물1] 등
+            "profile": profile   # 10가지 항목이 들어있는 딕셔너리
+        })
+
+    print(f"  -> Protagonist Defined: {protagonist_name}")
+
+    # [Step 4] 시놉시스 내 임시 이름 치환
+    print("  [Step 4] Replacing Names in Synopsis...")
+    final_synopsis = temp_synopsis
+    for placeholder, real_name in name_map.items():
+        final_synopsis = final_synopsis.replace(placeholder, real_name)
+    
+    # Django DB 저장
+    story = Story.objects.create(user_world_setting=user_world_setting, main_cliche=matched_cliche)
+    story.synopsis = final_synopsis
     story.save()
 
-    # 3.5 정보 추출 및 업데이트
-    universe_details = _generate_universe_details(refined_setting, root_synopsis)
-    characters_info_json = _extract_characters_info(root_synopsis, protagonist_info)
-    
+    # Neo4j Universe 생성
+    try:
+        create_universe_node_neo4j(universe_id, user_world_setting, protagonist_name)
+    except: pass
+
+    # 캐릭터 정보 JSON 변환
+    characters_info_json = json.dumps(characters_info_for_db, ensure_ascii=False)
+
+    # 3.5 Neo4j 업데이트
+    universe_details = _generate_universe_details(user_world_setting, final_synopsis)
     try:
         update_universe_details_neo4j(
             universe_id=universe_id, 
-            synopsis=root_synopsis, 
+            synopsis=final_synopsis, 
             twisted_synopsis="", 
             title=universe_details.get("title", "무제"), 
             description=universe_details.get("description", ""), 
@@ -265,11 +237,10 @@ def create_story_pipeline(user_world_setting):
         print(f"⚠️ Neo4j Details Update Failed: {e}")
         pass
 
-    # 4. 메인 경로 노드 생성 (엔딩까지)
-    print("  [Step 4] Creating Main Path Nodes...")
-    # characters_info_json 전달
+    # 4. 메인 경로 노드 생성
+    print("  [Step 5] Creating Main Path Nodes...")
     main_nodes = _generate_path_segment(
-        story, root_synopsis, protagonist_name, 
+        story, final_synopsis, protagonist_name, 
         start_node=None, universe_id=universe_id,
         characters_info_json=characters_info_json 
     )
@@ -278,9 +249,8 @@ def create_story_pipeline(user_world_setting):
     try: link_universe_to_first_scene(universe_id, f"{universe_id}_{main_nodes[0].id}")
     except: pass
 
-    # 5. 재귀적 분기 생성 시작 (DFS)
+    # 5. 재귀적 분기 생성 시작
     print(f"\n🌳 [Recursive Branching Start] Quota(n): {INITIAL_BRANCH_QUOTA}")
-    
     _generate_recursive_story(
         story=story,
         current_path_nodes=main_nodes,
@@ -296,9 +266,166 @@ def create_story_pipeline(user_world_setting):
 
 
 # ==========================================
-# [핵심 로직: DFS 재귀적 스토리 생성]
+# [신규 함수] 시놉시스 및 캐릭터 생성 로직
 # ==========================================
 
+def _generate_temp_synopsis(setting, cliche):
+    """
+    구체적인 이름 없이 [주인공], [인물1], [인물2]... 형태의 플레이스홀더를 사용하여 시놉시스를 작성합니다.
+    """
+    sys_prompt = (
+        "당신은 베스트셀러 웹소설 작가입니다. "
+        "주어진 설정과 클리셰를 바탕으로 기승전결이 완벽한 시놉시스를 작성하세요.\n\n"
+        "**[중요 규칙: 임시 이름 사용]**\n"
+        "1. 등장인물의 이름을 **절대** 짓지 마세요.\n"
+        "2. 주인공은 반드시 **'[주인공]'**이라고 표기하세요.\n"
+        "3. 그 외 등장인물은 **'[인물1]', '[인물2]', '[인물3]'...** 순서로 표기하세요.\n"
+        "   (예: [주인공]은 [인물1]을 만나 사랑에 빠지지만, [인물2]의 방해를 받는다.)\n"
+        "4. 이 규칙을 어기고 임의로 이름을 지으면 안 됩니다.\n\n"
+        "**[작성 가이드]**\n"
+        "1. 분량은 2000자 이상.\n"
+        "2. 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.\n"
+        "3. 사용자의 세계관 설정을 최대한 반영할 것."
+    )
+    
+    cliche_detail = (
+        f"장르: {cliche.genre.name}\n"
+        f"클리셰 제목: {cliche.title}\n"
+        f"핵심 요약: {cliche.summary}\n"
+        f"전개 가이드: {cliche.structure_guide}"
+    )
+    
+    user_prompt = (
+        f"★ 사용자 세계관 설정: {setting}\n"
+        f"----------------------------------------\n"
+        f"★ 필수 적용 클리셰 정보 ★\n{cliche_detail}\n"
+        f"----------------------------------------\n"
+        "위 내용을 바탕으로 '[주인공]'과 번호 붙은 임시 인물명('[인물1]' 등)을 사용하여 전체 시놉시스를 작성해줘."
+    )
+    
+    # 일반 텍스트 모드로 생성
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
+
+
+def _generate_character_mapping(synopsis, genre_name):
+    """
+    시놉시스를 분석하여 등장인물의 10가지 상세 프로필(이름, 성격, 신념 등)을 생성합니다.
+    """
+    naming_style = GENRE_NAMING_GUIDE.get(genre_name, "장르에 어울리는 매력적인 이름")
+    
+    sys_prompt = (
+        "당신은 캐릭터 메이킹 전문가입니다. "
+        "주어진 시놉시스에 등장하는 **임시 인물들([주인공], [인물1]...)**의 행적과 역할을 깊이 있게 분석하여, "
+        "가장 잘 어울리는 **실제 이름**과 **상세 프로필**을 창조하세요.\n\n"
+        "**[필수 상세 항목 (10가지)]**\n"
+        "각 인물에 대해 다음 정보를 구체적이고 입체적으로 서술하세요:\n"
+        "1. **이름**: 장르에 어울리는 이름 (가이드 참고)\n"
+        "2. **성격**: MBTI나 구체적인 성향 묘사\n"
+        "3. **신념**: 삶을 살아가는 원동력이나 절대적인 믿음\n"
+        "4. **목표**: 스토리 내에서 이루고자 하는 궁극적 목표\n"
+        "5. **가치관**: 중요하게 여기는 가치 (예: 정의, 가족, 돈)\n"
+        "6. **인간관계 스타일**: 타인을 대하는 태도나 방식\n"
+        "7. **좋아하는 것 (Likes)**\n"
+        "8. **싫어하는 것 (Dislikes)**\n"
+        "9. **취미**: 일상적인 취미\n"
+        "10. **특기**: 스토리 해결에 도움이 되는 능력\n\n"
+        f"**[작명 가이드]**: {naming_style}\n\n"
+        "**[출력 형식]**\n"
+        "반드시 아래 JSON 리스트 포맷을 준수하세요:\n"
+        "[\n"
+        "  {\n"
+        "    'placeholder': '[주인공]',\n"
+        "    'real_name': '이름',\n"
+        "    'profile': {\n"
+        "      'personality': '...',\n"
+        "      'beliefs': '...',\n"
+        "      'goal': '...',\n"
+        "      'values': '...',\n"
+        "      'relationship_style': '...',\n"
+        "      'likes': '...',\n"
+        "      'dislikes': '...',\n"
+        "      'hobbies': '...',\n"
+        "      'specialties': '...'\n"
+        "    }\n"
+        "  }, ...\n"
+        "]"
+    )
+    
+    user_prompt = f"시놉시스 내용:\n{synopsis}"
+    
+    # JSON 모드로 호출
+    res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=4000)
+    
+    if isinstance(res, dict) and 'characters' in res:
+        return res['characters']
+    elif isinstance(res, list):
+        return res
+    else:
+        return []
+
+
+# ==========================================
+# [기타 로직 함수들] (기존 함수 유지/수정)
+# ==========================================
+
+def _match_cliche(setting):
+    all_genres = Genre.objects.all()
+    if not all_genres.exists():
+        print("⚠️ DB에 장르 데이터가 없습니다.")
+        return None
+    
+    genre_text_list = []
+    for g in all_genres:
+        desc = g.description if g.description else "설명 없음"
+        genre_text_list.append(f"- [{g.name}]: {desc}")
+    
+    sys_prompt_1 = (
+        "당신은 장르 문학 분석가입니다. "
+        "사용자의 입력을 분석하여, 아래 목록 중 가장 적합한 **단 하나의 장르**를 선택하세요.\n"
+        "반드시 JSON 형식 {'genre_name': '장르명', 'reason': '이유'} 으로만 응답하세요."
+    )
+    user_prompt_1 = f"사용자 설정: {setting}\n\n[장르 목록]\n" + "\n".join(genre_text_list)
+    
+    res_1 = call_llm(sys_prompt_1, user_prompt_1, json_format=True)
+    selected_genre_name = res_1.get('genre_name', '판타지')
+    
+    try:
+        selected_genre = Genre.objects.get(name=selected_genre_name)
+    except Genre.DoesNotExist:
+        selected_genre = all_genres.first()
+
+    cliches = Cliche.objects.filter(genre=selected_genre)
+    if not cliches.exists(): return Cliche.objects.first()
+
+    cliche_text_list = []
+    for c in cliches:
+        info = (
+            f"ID: {c.id}\n제목: {c.title}\n정의: {c.summary}\n구조 가이드: {c.structure_guide}\n"
+        )
+        cliche_text_list.append(info)
+
+    sys_prompt_2 = (
+        f"당신은 '{selected_genre.name}' 장르 전문 편집자입니다. "
+        "장르와 설정을 고려하여 **가장 흥미롭고 극적인 전개가 가능한 클리셰** 하나를 선택하세요.\n"
+        "응답은 JSON 형식 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
+    )
+    user_prompt_2 = (
+        f"사용자 설정: {setting}\n\n[선택된 장르: {selected_genre.name}]\n\n"
+        f"[클리셰 후보 목록]\n" + "\n----------------\n".join(cliche_text_list)
+    )
+
+    res_2 = call_llm(sys_prompt_2, user_prompt_2, json_format=True)
+    
+    try:
+        selected_id = res_2.get('cliche_id')
+        return Cliche.objects.get(id=selected_id)
+    except:
+        return random.choice(list(cliches))
+
+# _refine_setting_and_protagonist 함수는 더 이상 사용되지 않으므로 삭제하거나 무시해도 됩니다.
+# _generate_synopsis 함수도 _generate_temp_synopsis로 대체되었습니다.
+
+# [핵심 로직: DFS 재귀적 스토리 생성], [보조 함수들] 등은 기존 코드 유지
 def _generate_recursive_story(story, current_path_nodes, quota, universe_id, protagonist_name, characters_info_json, hierarchy_id, twist_synopsis=None):
     if quota <= 0:
         print(f"    🚫 [Depth End] {hierarchy_id}: Quota reached 0. Stopping branch generation.")
@@ -371,11 +498,6 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
                 )
             else:
                 print(f"      🛑 [{current_branch_num}] Leaf branch created (Next quota 0).")
-
-
-# ==========================================
-# [보조 함수들: 노드 생성 및 관리]
-# ==========================================
 
 # characters_info_json 인자 추가
 def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, universe_id=None, is_twist_branch=False, characters_info_json="[]"):
@@ -564,7 +686,6 @@ def _save_node_to_db(story, scene_data, phase_name, current_depth, universe_id):
             
     return node
 
-# 전체 히스토리 추출 함수: 행동(Action) 포함 & 전체 내용 유지
 def _get_full_history(node):
     if not node: return ""
     history_list = []
@@ -595,10 +716,6 @@ def _get_full_history(node):
         
     # 과거 -> 현재 순으로 정렬하여 반환
     return "\n\n".join(reversed(history_list))
-
-# ==========================================
-# [기타 로직 함수들]
-# ==========================================
 
 def _split_nodes_into_sections(nodes, n):
     if n <= 0: return []
@@ -642,154 +759,6 @@ def _select_twist_point_from_candidates(candidates):
     
     print("      ⚠️ No valid twist point selected by AI. Skipping branch generation.")
     return None
-
-def _match_cliche(setting):
-    all_genres = Genre.objects.all()
-    if not all_genres.exists():
-        print("⚠️ DB에 장르 데이터가 없습니다.")
-        return None
-    
-    genre_text_list = []
-    for g in all_genres:
-        desc = g.description if g.description else "설명 없음"
-        genre_text_list.append(f"- [{g.name}]: {desc}")
-    
-    sys_prompt_1 = (
-        "당신은 장르 문학 분석가입니다. "
-        "사용자의 입력을 분석하여, 아래 목록 중 가장 적합한 **단 하나의 장르**를 선택하세요.\n"
-        "반드시 JSON 형식 {'genre_name': '장르명', 'reason': '이유'} 으로만 응답하세요."
-    )
-    user_prompt_1 = f"사용자 설정: {setting}\n\n[장르 목록]\n" + "\n".join(genre_text_list)
-    
-    res_1 = call_llm(sys_prompt_1, user_prompt_1, json_format=True)
-    selected_genre_name = res_1.get('genre_name', '판타지')
-    
-    try:
-        selected_genre = Genre.objects.get(name=selected_genre_name)
-    except Genre.DoesNotExist:
-        selected_genre = all_genres.first()
-
-    cliches = Cliche.objects.filter(genre=selected_genre)
-    if not cliches.exists(): return Cliche.objects.first()
-
-    cliche_text_list = []
-    for c in cliches:
-        info = (
-            f"ID: {c.id}\n제목: {c.title}\n정의: {c.summary}\n구조 가이드: {c.structure_guide}\n"
-        )
-        cliche_text_list.append(info)
-
-    sys_prompt_2 = (
-        f"당신은 '{selected_genre.name}' 장르 전문 편집자입니다. "
-        "장르와 설정을 고려하여 **가장 흥미롭고 극적인 전개가 가능한 클리셰** 하나를 선택하세요.\n"
-        "응답은 JSON 형식 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
-    )
-    user_prompt_2 = (
-        f"사용자 설정: {setting}\n\n[선택된 장르: {selected_genre.name}]\n\n"
-        f"[클리셰 후보 목록]\n" + "\n----------------\n".join(cliche_text_list)
-    )
-
-    res_2 = call_llm(sys_prompt_2, user_prompt_2, json_format=True)
-    
-    try:
-        selected_id = res_2.get('cliche_id')
-        return Cliche.objects.get(id=selected_id)
-    except:
-        return random.choice(list(cliches))
-
-def _refine_setting_and_protagonist(raw_setting, genre_name=None):
-    """
-    설정과 장르를 받아 세계관을 구체화하고 주인공을 생성합니다.
-    """
-    # 1. 장르별 작명 가이드 선택
-    if genre_name and genre_name in GENRE_NAMING_GUIDE:
-        # 특정 장르가 지정된 경우 해당 가이드만 사용
-        selected_guide = GENRE_NAMING_GUIDE[genre_name]
-        naming_instruction = (
-            f"3. **[필수] 주인공 이름 생성 규칙**: \n"
-            f"   - 현재 장르는 **'{genre_name}'**입니다.\n"
-            f"   - 다음 작명 스타일을 반드시 따르세요: {selected_guide}\n"
-        )
-    else:
-        # 장르 미정 시 전체 가이드 참고 (기존 방식 fallback)
-        naming_guide_str = json.dumps(GENRE_NAMING_GUIDE, ensure_ascii=False)
-        naming_instruction = (
-            f"3. **주인공 이름 생성 규칙**: \n"
-            f"   - 입력된 설정의 분위기를 분석하여 가장 적절한 장르 스타일을 선택하세요.\n"
-            f"   - 참고 가이드: {naming_guide_str}\n"
-        )
-
-    sys_prompt = (
-        "당신은 웹소설 기획자입니다. 사용자의 입력을 분석하여 세계관을 구체화하고, 그에 가장 잘 어울리는 매력적인 주인공을 정의하세요.\n\n"
-        "**[작업 지침]**\n"
-        "1. **Refined Setting (세계관 구체화)**: 사용자의 설정을 바탕으로 장르적 특색(판타지, 로맨스, SF, 무협 등)을 살려 흥미롭게 서술하세요.\n"
-        "2. **Protagonist (주인공 정의)**: 이름, 성격, 신념, 외모를 구체적으로 묘사하세요.\n"
-        "   - **[중요] 이름 생성 규칙**: 분석된 장르에 맞춰 아래 가이드를 참고하여 **가장 창의적이고 분위기에 맞는 이름**을 지으세요.\n"
-        f"{naming_instruction}"
-        "   - 흔한 이름(김철수, 이영희 등)은 절대 금지입니다. 주인공다운 독창적인 이름을 사용하세요."
-    )
-    user_prompt = (
-        f"사용자 입력: {raw_setting}\n"
-        "출력 JSON: {'refined_setting': '구체화된 세계관', 'protagonist': {'name': '이름', 'desc': '성격, 믿음, 사상, 외모 포함 상세 묘사'}}"
-    )
-    res = call_llm(sys_prompt, user_prompt, json_format=True, temperature=0.8)
-    return res.get('refined_setting', raw_setting), res.get('protagonist', {'name':'이안', 'desc':'평범함'})
-
-def _generate_synopsis(story, cliche, p_name, p_desc, name_candidates=[], include_example=False):
-    
-    names_instruction = ""
-    if name_candidates:
-        names_str = ", ".join(name_candidates)
-        names_instruction = (
-            f"\n5. **[중요] 등장인물 작명**: 새로운 인물이 등장할 때는 다음 후보 이름들을 우선적으로 사용하세요.\n"
-            f"   - 추천 이름 목록: [{names_str}]\n"
-            f"   - 위 이름들을 역할에 맞게 배정하여 사용하세요."
-        )
-    
-    sys_prompt = (
-        "당신은 베스트셀러 웹소설 작가입니다. "
-        "주어진 세계관 설정과 **지정된 필수 클리셰**를 완벽하게 조합하여 매력적인 시놉시스를 작성하세요.\n"
-        "1. 분량은 2000자 이상.\n"
-        "2. 기승전결 구조와 주인공의 내면 변화 포함.\n"
-        "3. **선택된 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.**\n"
-        "4. **사용자 설정 우선**: 사용자가 입력한 구체적인 설정은 크게 변경하거나 생략하지 말고 최대한 이야기에 포함시키세요.\n"
-        "5. 문장은 번역투가 아닌 자연스러운 한국어 소설체로 작성하세요."
-    )
-    
-    cliche_detail = (
-        f"제목: {cliche.title}\n"
-        f"장르: {cliche.genre.name}\n"
-        f"핵심 요약: {cliche.summary}\n"
-        f"전개 가이드: {cliche.structure_guide}"
-    )
-    
-    if include_example and cliche.example_work_summary:
-        cliche_detail += f"\n\n★ 참고용 대표 예시 작품 (영감만 받을 것) ★\n{cliche.example_work_summary}"
-    
-    user_prompt = (
-        f"★ 사용자 세계관 설정 (최우선 반영): {story.user_world_setting}\n"
-        f"주인공: {p_name} ({p_desc})\n"
-        f"----------------------------------------\n"
-        f"★ 필수 적용 클리셰 정보 ★\n{cliche_detail}\n"
-        f"----------------------------------------\n"
-        "위 내용을 바탕으로 사용자의 설정을 충실히 반영한 전체 시놉시스를 작성해줘."
-    )
-    
-    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=8000)
-
-def _extract_characters_info(synopsis, protagonist_info):
-    sys_prompt = "시놉시스에 등장하는 주요 인물들의 이름과 '성격, 믿음, 사상, 외모'를 분석하여 JSON 리스트로 추출하세요."
-    user_prompt = f"시놉시스: {synopsis[:3000]}..."
-    res = call_llm(sys_prompt, user_prompt, json_format=True)
-    
-    chars = res.get('characters', [])
-
-    
-
-    if not any(c.get('name') == protagonist_info['name'] for c in chars):
-        chars.insert(0, protagonist_info)
-        
-    return json.dumps(chars, ensure_ascii=False)
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
     sys_prompt = (
