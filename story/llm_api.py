@@ -133,7 +133,7 @@ def _generate_name_candidates(setting, genre_name):
     
     try:
         # 온도를 높여(0.8) 창의적인 이름이 나오도록 유도
-        res = call_llm(sys_prompt, user_prompt, json_format=True, temperature=0.8) 
+        res = call_llm(sys_prompt, user_prompt, json_format=True) 
         return res.get('names', [])
     except:
         return []
@@ -892,5 +892,4 @@ def _generate_universe_details(setting, synopsis):
     # 요약본이 아닌 '전체 시놉시스'를 전달하여 맥락 전체 파악 유도
     user_prompt = f"세계관 설정: {setting}\n\n전체 시놉시스(Full Text): {synopsis}"
     
-    # 온도를 약간 높여(0.7 -> 0.8) 창의적인 제목 유도
-    return call_llm(sys_prompt, user_prompt, json_format=True, temperature=0.8)
+    return call_llm(sys_prompt, user_prompt, json_format=True)
