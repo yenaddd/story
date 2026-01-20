@@ -261,7 +261,7 @@ def create_story_pipeline(user_world_setting):
 
     # 4. 메인 경로 노드 생성 (엔딩까지)
     print("  [Step 4] Creating Main Path Nodes...")
-    # [수정] characters_info_json 전달
+    # characters_info_json 전달
     main_nodes = _generate_path_segment(
         story, root_synopsis, protagonist_name, 
         start_node=None, universe_id=universe_id,
@@ -371,7 +371,7 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
 # [보조 함수들: 노드 생성 및 관리]
 # ==========================================
 
-# [수정] characters_info_json 인자 추가
+# characters_info_json 인자 추가
 def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, universe_id=None, is_twist_branch=False, characters_info_json="[]"):
     start_depth = start_node.depth if start_node else 0
     next_depth = start_depth + 1
@@ -379,10 +379,10 @@ def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, u
     needed_nodes = TOTAL_DEPTH_PER_PATH - start_depth
     if needed_nodes < 1: needed_nodes = 1 
 
-    # [수정] start_node를 기반으로 '전체 히스토리(심경 변화 포함)' 추출
+    # start_node를 기반으로 '전체 히스토리(심경 변화 포함)' 추출
     initial_history = _get_full_history(start_node)
 
-    # [수정] _create_nodes_common에 히스토리와 캐릭터 정보 전달
+    # _create_nodes_common에 히스토리와 캐릭터 정보 전달
     nodes = _create_nodes_common(
         story, synopsis, protagonist_name, needed_nodes, next_depth, universe_id,
         initial_history=initial_history,
@@ -395,7 +395,7 @@ def _generate_path_segment(story, synopsis, protagonist_name, start_node=None, u
     
     return nodes
 
-# [수정] 전체 히스토리, 캐릭터 정보 등 모든 맥락을 입력받도록 대폭 수정
+# 전체 히스토리, 캐릭터 정보 등 모든 맥락을 입력받음
 def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, universe_id, initial_history="", characters_info_json="[]"):
     phases = ["발단", "전개", "절정", "결말"]
     BATCH_SIZE = 2
@@ -751,10 +751,11 @@ def _extract_characters_info(synopsis, protagonist_info):
 
 def _connect_linear_nodes(nodes, universe_id, protagonist_name):
     sys_prompt = (
-        f"주인공 '{protagonist_name}'이 현재 장면에서 다음 장면으로 넘어가기 위해 취해야 할 **자연스럽고 일상적인 행동(Condition Action)**을 정의하세요.\n"
-        "1. 유저가 별도의 힌트 없이도 상황상 자연스럽게 입력할 법한 행동이어야 합니다. 행위가 구체적이면 안됩니다.(예: '문을 연다', '대답한다', '전화를 받는다')\n"
-        "2. **조건 행동의 결과(result)는 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다.**"
-        "3. 아주 일상적인 행동이어야 합니다. 마치 방탈출을 하는 게임 플레이어처럼 유저가 할 수 있을 법한 행동을 조건 행위로 지정해야 합니다."
+        f"주인공 '{protagonist_name}'이 **'현재 장면'의 서술이 모두 끝난 직후**, 다음 장면으로 넘어가기 위해 취해야 할 행동을 정의하세요.\n"
+        "1. **[중요] 시점 원칙**: '현재 장면'에 서술된 내용은 이미 다 일어난 일입니다. 행동은 그 **이후**에 벌어질 일이어야 합니다.\n"
+        "2. **[중요] 중복 금지**: 현재 장면 본문에 이미 묘사된 행위(예: 짐을 풀었다, 대화를 나눴다 등)를 다시 행동으로 제시하지 마세요.\n"
+        "3. 행동은 구체적이지 않고 직관적이어야 합니다. (예: '방을 나선다', '대답한다', '주위를 살핀다')\n"
+        "4. 행동의 결과(result)는 다음 장면의 첫 문장과 자연스럽게 이어져야 합니다."
     )
     
     for i in range(len(nodes) - 1):
@@ -766,10 +767,13 @@ def _connect_linear_nodes(nodes, universe_id, protagonist_name):
         next_n.save()
         
         user_prompt = (
-            f"현재 장면(마지막 부분): ...{curr.content[-300:]}\n"
-            f"다음 장면(시작 부분): {next_n.content[:300]}...\n\n"
-            "위 두 장면을 연결하는 Action과 Result를 생성하세요.\n"
-            "출력 JSON: {'action': '유저가 입력할 행동', 'result': '행동의 결과(다음 줄거리 도입부로 자연스럽게 연결)'}"
+            f"### [1] 현재 장면 (이미 완료된 상황)\n{curr.content[-500:]}\n"
+            f"(설명: 위 내용은 이미 진행되었습니다. 주인공은 이 상황 끝에 놓여 있습니다.)\n\n"
+            f"### [2] 다음 장면 (이어질 내용의 시작)\n{next_n.content[:300]}...\n\n"
+            f"--------------------------------------------------\n"
+            f"위 두 장면 사이를 연결하는 '유저 행동(Action)'과 '그 직후의 결과(Result)'를 생성하세요.\n"
+            f"Q: 현재 장면의 상황이 모두 끝난 후, 주인공이 무엇을 해야 다음 장면으로 넘어갑니까?\n"
+            f"출력 JSON: {{'action': '유저가 할 행동', 'result': '행동 직후 묘사(다음 장면 도입부)'}}"
         )
         
         res = call_llm(sys_prompt, user_prompt, json_format=True)
@@ -814,15 +818,16 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, characters_info_j
 
 def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text, twist_synopsis=None):
     sys_prompt = (
-        f"현재 장면에서 이야기가 완전히 다른 방향(반전)으로 흐르기 위해, "
+        f"현재 장면이 끝난 시점에서, 이야기가 완전히 다른 방향(반전)으로 흐르기 위해 "
         f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적이고 파격적인 조건 행동(Twist Action)**을 정의하세요.\n"
-        "1. 기존의 정석적인 행동과는 의도가 명확히 달라야 합니다.\n"
-        "2. **행동의 결과(result)는 반전된 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다.**"
+        "1. '현재 장면'에 이미 나온 내용은 행동으로 쓰지 마세요. 행동은 현재 장면이 끝난 **다음**에 발생합니다.\n"
+        "2. 기존의 정석적인 행동과는 의도가 명확히 달라야 합니다.\n"
+        "3. 행동의 결과(result)는 반전된 다음 장면의 시작 부분과 자연스럽게 이어져야 합니다."
     )
     
     user_prompt = (
-        f"현재 장면(마지막 부분): ...{node.content[-300:]}\n"
-        f"반전된 다음 장면(시작 부분): {twist_next_node.content[:300]}...\n"
+        f"### [1] 현재 장면 (완료된 상황): ...{node.content[-500:]}\n"
+        f"### [2] 반전된 다음 장면 (시작 부분): {twist_next_node.content[:300]}...\n"
         f"참고(기존 정석 행동): '{original_action_text}'\n\n"
         "위 두 장면을 연결하는 반전 행동(Action)과 결과(Result)를 생성하세요.\n"
         "출력 JSON: {'action': '반전 행동', 'result': '행동의 결과'}"
