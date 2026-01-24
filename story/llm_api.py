@@ -343,7 +343,7 @@ def _generate_detailed_world_setting(user_input, synopsis):
         f"JSON 키: time_space, laws_rules, culture_values"
     )
 
-    return call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=4000)
+    return call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=16000)
 
 
 def _generate_character_mapping(synopsis, genre_name, world_details):
@@ -400,7 +400,7 @@ def _generate_character_mapping(synopsis, genre_name, world_details):
     )
     
     # JSON 모드로 호출
-    res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=4000)
+    res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=16000)
     
     if isinstance(res, dict) and 'characters' in res:
         return res['characters']
@@ -608,8 +608,8 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
             "2. **직전 장면**: 바로 앞 장면의 **전체 내용**입니다. 문맥이 끊기지 않게 자연스럽게 이어가세요.\n"
             "3. **현재 시놉시스**: 이번 구간의 핵심 목표입니다.\n\n"
             "**[출력 필수 항목]**\n"
-            "각 장면은 title, description(2000자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다.\n"
-            "**분량 엄수**: description은 반드시 공백 포함 2000자 이상이어야 합니다. 풍부한 묘사와 대사를 포함하세요.\n"
+            "각 장면은 title, description(3000자 이상), setting, purpose, characters_list, character_states, character_changes를 포함해야 합니다.\n"
+            "**분량 엄수**: description은 반드시 공백 포함 3000자 이상이어야 합니다. 풍부한 묘사와 대사를 포함하세요.\n"
         )
         
         if is_ending:
@@ -643,7 +643,7 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
         print(f"      runner: generating normal batch {generated_count+1}~{generated_count+current_batch_size}...")
         
         try:
-            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=16000, timeout=300)
+            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=16000, timeout=500)
             scenes = res.get('scenes', [])
         except Exception as e:
             print(f"      ⚠️ Normal batch generation failed: {e}")
@@ -681,7 +681,7 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
         sys_prompt, user_prompt = build_prompt(1, is_ending=True)
 
         try:
-            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=16000, timeout=300)
+            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=16000, timeout=500)
             scenes = res.get('scenes', [])
         except Exception as e:
             print(f"      ⚠️ Ending generation failed: {e}")
@@ -778,7 +778,7 @@ def _select_twist_point_from_candidates(candidates):
     
     for n in candidates:
         if n.choices.count() >= 2: continue
-        prompt_text += f"[ID: {n.id}] Phase: {n.chapter_phase} | 내용: {n.content[:60]}...\n"
+        prompt_text += f"[ID: {n.id}] Phase: {n.chapter_phase} | 내용: {n.content}...\n"
         node_map[n.id] = n
     
     if not node_map:
@@ -882,8 +882,8 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
     )
     
     user_prompt = (
-        f"### [1] 현재 장면 (완료된 상황): ...{node.content[-500:]}\n"
-        f"### [2] 반전된 다음 장면 (시작 부분): {twist_next_node.content[:300]}...\n"
+        f"### [1] 현재 장면 (완료된 상황): ...{node.content}\n"
+        f"### [2] 반전된 다음 장면 (시작 부분): {twist_next_node.content}...\n"
         f"참고(기존 정석 행동): '{original_action_text}'\n\n"
         "위 두 장면을 연결하는 반전 행동(Action)과 결과(Result)를 생성하세요.\n"
         "출력 JSON: {'action': '반전 행동', 'result': '행동의 결과'}"
