@@ -21,8 +21,8 @@ from .neo4j_connection import (
 
 # API 설정
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-BASE_URL = "https://api.fireworks.ai/inference/v1"
-MODEL_NAME = "accounts/fireworks/models/deepseek-v3p1" 
+BASE_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+MODEL_NAME = "accounts/fireworks/models/deepseek-v3p2" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
 # 공통 제약 조건 상수
@@ -93,7 +93,7 @@ def _clean_data_recursive(data):
     else:
         return data
 
-def call_llm(system_prompt, user_prompt, json_format=False, stream=False, max_tokens=4000, max_retries=3, timeout=300, temperature=0.7):
+def call_llm(system_prompt, user_prompt, json_format=False, stream=True, max_tokens=30000, max_retries=3, timeout=500, temperature=0.7):
     full_system_prompt = f"{system_prompt}\n\n{KOREAN_ONLY_RULE}"    
     messages = [{"role": "system", "content": full_system_prompt}, {"role": "user", "content": user_prompt}]
     response_format = {"type": "json_object"} if json_format else None
@@ -153,7 +153,7 @@ def create_story_pipeline(user_world_setting):
     """
     1. 유저 인풋 기반 클리셰 매칭
     2. [주인공], [인물1]... 임시 이름을 사용하여 시놉시스 생성
-    3. [신규] 시놉시스와 인풋을 기반으로 세계관 세부 설정(시공간, 규칙, 문화) 생성
+    3. 시놉시스와 인풋을 기반으로 세계관 세부 설정(시공간, 규칙, 문화) 생성
     4. 생성된 시놉시스와 세계관 설정을 반영하여 인물 상세 프로필 생성
     5. 시놉시스의 임시 이름을 실제 이름으로 치환하여 최종 저장
     """
@@ -161,27 +161,26 @@ def create_story_pipeline(user_world_setting):
     print(f"\n🌍 [NEO4J] Creating Universe Node: {universe_id}")
 
     # [Step 1] 클리셰 및 장르 매칭
-    print("  [Step 1] Analyzing Genre & Matching Cliche...")
+    print("\n  [Step 1] Analyzing Genre & Matching Cliche...")
     matched_cliche = _match_cliche(user_world_setting)
     current_genre_name = matched_cliche.genre.name
     print(f"  -> Matched Genre: {current_genre_name} / Cliche: {matched_cliche.title}")
 
     # [Step 2] 임시 이름을 사용한 시놉시스 생성
-    print("  [Step 2] Generating Synopsis with Temporary Names...")
+    print("\n  [Step 2] Generating Synopsis with Temporary Names...")
     temp_synopsis = _generate_temp_synopsis(user_world_setting, matched_cliche)
     print(f"  -> Temp Synopsis Generated (Length: {len(temp_synopsis)})")
 
-    # [Step 2.5] 세계관 세부 설정 생성 (신규 추가)
-    print("  [Step 2.5] Generating Detailed World Settings...")
+    # [Step 3] 세계관 세부 설정 생성
+    print("\n  [Step 3] Generating Detailed World Settings...")
     detailed_world_setting = _generate_detailed_world_setting(user_world_setting, temp_synopsis)
     
     # Neo4j 저장을 위해 JSON 문자열로 변환
     world_setting_json_str = json.dumps(detailed_world_setting, ensure_ascii=False)
     print("  -> World Settings Generated.")
 
-    # [Step 3] 시놉시스 + 세계관 설정 기반 캐릭터 상세 생성
-    print("  [Step 3] Creating Detailed Characters based on Synopsis & World Context...")
-    # 인자에 detailed_world_setting 추가
+    # [Step 4] 시놉시스 + 세계관 설정 기반 캐릭터 상세 생성
+    print("\n  [Step 4] Creating Detailed Characters based on Synopsis & World Context...")
     character_map_list = _generate_character_mapping(temp_synopsis, current_genre_name, detailed_world_setting)
     
     # 데이터 처리 및 주인공 정보 추출
@@ -209,8 +208,8 @@ def create_story_pipeline(user_world_setting):
 
     print(f"  -> Protagonist Defined: {protagonist_name}")
 
-    # [Step 4] 시놉시스 내 임시 이름 치환
-    print("  [Step 4] Replacing Names in Synopsis...")
+    # [Step 5] 시놉시스 내 임시 이름 치환
+    print("\n  [Step 5] Replacing Names in Synopsis...")
     final_synopsis = temp_synopsis
     for placeholder, real_name in name_map.items():
         final_synopsis = final_synopsis.replace(placeholder, real_name)
@@ -250,7 +249,7 @@ def create_story_pipeline(user_world_setting):
         pass
 
     # 4. 메인 경로 노드 생성
-    print("  [Step 5] Creating Main Path Nodes...")
+    print("\n  [Step 5] Creating Main Path Nodes...")
     main_nodes = _generate_path_segment(
         story, final_synopsis, protagonist_name, 
         start_node=None, universe_id=universe_id,
@@ -287,23 +286,26 @@ def _generate_temp_synopsis(setting, cliche):
     """
     sys_prompt = (
         "당신은 베스트셀러 웹소설 작가입니다. "
-        "주어진 설정과 클리셰를 바탕으로 기승전결이 완벽한 시놉시스를 작성하세요.\n\n"
+        "주어진 설정과 클리셰를 바탕으로 기승전결이 갖추어진 시놉시스를 작성하세요.\n\n"
         "**[중요 규칙: 임시 이름 사용]**\n"
         "1. 등장인물의 이름을 **절대** 짓지 마세요.\n"
         "2. 주인공은 반드시 **'[주인공]'**이라고 표기하세요.\n"
         "3. 그 외 등장인물은 **'[인물1]', '[인물2]', '[인물3]'...** 순서로 표기하세요.\n"
         "   (예: [주인공]은 [인물1]을 만나 사랑에 빠지지만, [인물2]의 방해를 받는다.)\n"
-        "4. 이 규칙을 어기고 임의로 이름을 지으면 안 됩니다.\n\n"
+        "4. 이 규칙을 어기고 임의로 이름을 지으면 안 됩니다.\n"
+        "5. [인물1]과 같은 등장인물은 늘 명칭과 인물이 일관성 있게 매칭되어야 합니다.([인물1]로 불리던 등장인물이 이후에 [인물2]로 다르게 불리면 안됨.)\n\n"
         "**[작성 가이드]**\n"
-        "1. 분량은 6000자 이상.\n"
+        "1. 분량은 10000자 이상.\n"
         "2. 클리셰의 '핵심 요약'과 '전개 가이드'를 충실히 따를 것.\n"
-        "3. 사용자의 세계관 설정을 최대한 반영할 것."
+        "3. 사용자의 세계관 설정을 최대한 빠짐없이 반영할 것.\n"
+        "4. 이야기는 꼭 결말을 낼 것."
+
     )
     
     cliche_detail = (
         f"장르: {cliche.genre.name}\n"
-        f"클리셰 제목: {cliche.title}\n"
-        f"핵심 요약: {cliche.summary}\n"
+        f"클리셰 명칭: {cliche.title}\n"
+        f"클리셰 핵심 설명 : {cliche.summary}\n"
         f"전개 가이드: {cliche.structure_guide}"
     )
     
@@ -316,23 +318,24 @@ def _generate_temp_synopsis(setting, cliche):
     )
     
     # 일반 텍스트 모드로 생성
-    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=16000)
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=30000)
 
 def _generate_detailed_world_setting(user_input, synopsis):
     """
     시놉시스와 유저 인풋을 기반으로 구체적인 세계관 세부 사항을 JSON으로 생성합니다.
     """
     sys_prompt = (
-        "당신은 세계관 설정(World Building) 전문가입니다. "
+        "당신은 전문 웹소설 작가이고, 스토리를 진행할 탄탄한 세계관을 설계하려고 합니다. "
         "사용자의 기초 설정과 앞서 생성된 시놉시스를 철저히 분석하여, 이야기가 진행될 세계의 **구체적이고 입체적인 세부 설정**을 확장하세요.\n\n"
-        "**[생성해야 할 3가지 카테고리]**\n"
-        "1. **시공간 설정 (time_space)**: 시대적 배경(역사), 지리적 특성(지역명, 기후, 생태계), 해당 세계만의 물리 법칙 등.\n"
+        "**[생성해야 할 4가지 세계관 설정 카테고리]**\n"
+        "1. **시공간 (time_space)**: 시대적 배경(역사), 지리적 특성(지역명, 기후, 생태계), 해당 세계만의 물리 법칙.\n"
         "2. **법과 규칙 (laws_rules)**: 통치 체제, 핵심 법률, 마법/기술의 구동 원리 및 한계, 사회 계급 구조.\n"
         "3. **문화 및 가치관 (culture_values)**: 종교, 지배적인 철학, 도덕 관념, 전통/풍습, 종족적 특성, 세계를 바라보는 관점.\n\n"
         "**[출력 규칙]**\n"
         "- 반드시 아래 JSON 포맷을 준수하세요.\n"
         "- 내용은 추상적이지 않고 구체적이어야 합니다. (예: '마법이 있다' -> '마나를 혈관에 순환시켜 발동하며 과다 사용 시 혈관이 파열된다')\n"
-        "- 시놉시스 사건의 개연성을 뒷받침해야 합니다."
+        "- 시놉시스 내용이 진행될 배경 세계관이므로 시놉시스 사건의 개연성을 뒷받침할 수 있는 세계관이어야 합니다.\n"
+        "- 각 세계관 설정 항목을 각 500자 이상으로 최대한 구체적으로 작성하세요."
     )
     
     user_prompt = (
@@ -343,7 +346,7 @@ def _generate_detailed_world_setting(user_input, synopsis):
         f"JSON 키: time_space, laws_rules, culture_values"
     )
 
-    return call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=16000)
+    return call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=30000)
 
 
 def _generate_character_mapping(synopsis, genre_name, world_details):
@@ -355,13 +358,14 @@ def _generate_character_mapping(synopsis, genre_name, world_details):
 
     sys_prompt = (
         "당신은 캐릭터 메이킹 전문가입니다. "
-        "시놉시스와 **확장된 세계관 설정**을 깊이 있게 분석하여, "
-        "등장인물([주인공], [인물1]...)들에게 **실제 이름**과 **상세 프로필**을 부여하세요.\n\n"
-        "**[중요: 세계관 반영]**\n"
-        "캐릭터의 직업, 신념, 특기 등은 반드시 **제공된 세계관(법칙, 문화, 종족 특성)**과 밀접하게 연관되어야 합니다.\n"
-        "(예: 마법이 금지된 세계라면 -> 신념: '마법 자유화', 특기: '숨겨진 마나 제어')\n\n"
-        "**[필수 상세 항목 (10가지)]**\n"
-        "1. **이름**: 장르에 어울리는 이름 (가이드 참고)\n"
+        "시놉시스와 **세계관 설정**을 깊이 있게 분석하여, "
+        "모든 등장인물([주인공], [인물1]...)들에게 **실제 이름**과 **상세 프로필**을 부여하세요.\n\n"
+        "**[중요: 세계관 반영, 시놉시스 내용과 깊이 연관]**\n"
+        "캐릭터의 직업, 신념, 특기 등의 인물 특성은 반드시 **제공된 세계관(법칙, 문화, 종족 특성)**과 밀접하게 연관되어야 합니다.(예: 마법이 존재하지만 사용이 금지된 세계라면 -> 신념: '마법 자유화', 특기: '숨겨진 마나 제어')\n"
+        "캐릭터의 모든 인물 특성은 반드시 제공된 시놉시스의 내용과 밀접하게 연관되며 시놉시스의 개연성을 보장해야 합니다. 예를 들어, 시놉시스 내에서 [주인공]이 나약한 사람을 돕고 싶어하는 성격이라면 인물 특성에도 해당 내용이 반드시 포함되어야 합니다.\n"
+        "시놉시스에서 드러나는 각 인물의 특성이 모두 빠짐없이 인물 특성 생성 내용에 반영되어야 합니다. 시놉시스의 내용을 잘 설명해줄 수 있는 각 인물의 특성이어야 합니다.\n\n"
+        "**[인물 특성 11가지 카테고리]**\n"
+        "1. **이름**: 장르에 어울리는 이름 (캐릭터 이름 생성 가이드 참고)\n"
         "2. **성격**: MBTI나 구체적인 성향 묘사\n"
         "3. **신념**: 삶을 살아가는 원동력 (세계관 가치관 반영)\n"
         "4. **목표**: 스토리 내 목표\n"
@@ -370,14 +374,16 @@ def _generate_character_mapping(synopsis, genre_name, world_details):
         "7. **좋아하는 것**\n"
         "8. **싫어하는 것**\n"
         "9. **취미**: 세계관 내에서 가능한 취미\n"
-        "10. **특기**: 스토리 해결 능력 (세계관 기술/마법 반영)\n\n"
-        f"**[작명 가이드]**: {naming_style}\n\n"
+        "10. **특기**: 스토리 해결 능력 (세계관 기술/마법 반영)\n"
+        "11. **성장 배경**: 시놉시스 내에서의 현재 인물이 되기까지의 성장 배경. 자라온 환경, 성장하며 겪어온 일들, 어린 시절.\n"
+        "12. **직업**: 세계관 내에서 가능한 직업\n\n"
+        f"**[캐릭터 이름 생성 가이드]**: {naming_style}\n\n"
         "**[출력 형식]**\n"
         "반드시 아래 JSON 리스트 포맷을 준수하세요:\n"
         "[\n"
         "  {\n"
-        "    'placeholder': '[주인공]',\n"
-        "    'real_name': '이름',\n"
+        "    'placeholder': '[주인공]', '[인물1]' 등 한 등장인물 임시 이름,\n"
+        "    'real_name': 해당 등장인물에 대해 생성된 이름\n"
         "    'profile': {\n"
         "      'personality': '...',\n"
         "      'beliefs': '...',\n"
@@ -388,6 +394,8 @@ def _generate_character_mapping(synopsis, genre_name, world_details):
         "      'dislikes': '...',\n"
         "      'hobbies': '...',\n"
         "      'specialties': '...'\n"
+        "      'upbringing': '...',\n"
+        "      'job': '...',\n"
         "    }\n"
         "  }, ...\n"
         "]"
@@ -400,7 +408,7 @@ def _generate_character_mapping(synopsis, genre_name, world_details):
     )
     
     # JSON 모드로 호출
-    res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=16000)
+    res = call_llm(sys_prompt, user_prompt, json_format=True, max_tokens=30000)
     
     if isinstance(res, dict) and 'characters' in res:
         return res['characters']
@@ -422,9 +430,10 @@ def _match_cliche(setting):
         genre_text_list.append(f"- [{g.name}]: {desc}")
     
     sys_prompt_1 = (
-        "당신은 장르 문학 분석가입니다. "
+        "당신은 장르 문학 분석가입니다."
         "사용자의 입력을 분석하여, 아래 목록 중 가장 적합한 **단 하나의 장르**를 선택하세요.\n"
-        "반드시 JSON 형식 {'genre_name': '장르명', 'reason': '이유'} 으로만 응답하세요."
+        "반드시 JSON 형식 {'genre_name': '장르명', 'reason': '이유'} 으로만 응답하세요.\n"
+        "사용자의 입력에 직접적인 장르명이 등장하거나 특정 장르를 암시한다면 해당 장르를 선택하고, 그렇지 않은 경우에는 사용자 입력 내용과 가장 어울리는 장르를 선택하세요."
     )
     user_prompt_1 = f"사용자 설정: {setting}\n\n[장르 목록]\n" + "\n".join(genre_text_list)
     
@@ -448,7 +457,7 @@ def _match_cliche(setting):
 
     sys_prompt_2 = (
         f"당신은 '{selected_genre.name}' 장르 전문 편집자입니다. "
-        "장르와 설정을 고려하여 **가장 흥미롭고 극적인 전개가 가능한 클리셰** 하나를 선택하세요.\n"
+        "장르와 사용자 설정을 고려하여 **흥미로운 전개가 가능하고, 사용자 설정과 가장 잘 어우러지는 클리셰** 하나를 선택하세요.\n"
         "응답은 JSON 형식 {'cliche_id': ID숫자, 'reason': '선택 이유'} 만 반환하세요."
     )
     user_prompt_2 = (
@@ -468,7 +477,7 @@ def _match_cliche(setting):
 # _generate_synopsis 함수도 _generate_temp_synopsis로 대체되었습니다.
 
 # [핵심 로직: DFS 재귀적 스토리 생성], [보조 함수들] 등은 기존 코드 유지
-def _generate_recursive_story(story, current_path_nodes, quota, universe_id, protagonist_name, characters_info_json, hierarchy_id, twist_synopsis=None):
+def _generate_recursive_story(story, current_path_nodes, quota, universe_id, protagonist_name, characters_info_json, hierarchy_id, twisted_synopsis=None):
     if quota <= 0:
         print(f"    🚫 [Depth End] {hierarchy_id}: Quota reached 0. Stopping branch generation.")
         return
@@ -523,7 +532,7 @@ def _generate_recursive_story(story, current_path_nodes, quota, universe_id, pro
                 universe_id, 
                 protagonist_name, 
                 original_action,
-                twist_synopsis=twisted_synopsis 
+                twisted_synopsis=twisted_synopsis 
             )
             
             next_quota = quota - 1
@@ -643,7 +652,7 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
         print(f"      runner: generating normal batch {generated_count+1}~{generated_count+current_batch_size}...")
         
         try:
-            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=16000, timeout=500)
+            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=30000, timeout=500)
             scenes = res.get('scenes', [])
         except Exception as e:
             print(f"      ⚠️ Normal batch generation failed: {e}")
@@ -681,7 +690,7 @@ def _create_nodes_common(story, synopsis, protagonist_name, count, start_depth, 
         sys_prompt, user_prompt = build_prompt(1, is_ending=True)
 
         try:
-            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=16000, timeout=500)
+            res = call_llm(sys_prompt, user_prompt, json_format=True, stream=True, max_tokens=30000, timeout=500)
             scenes = res.get('scenes', [])
         except Exception as e:
             print(f"      ⚠️ Ending generation failed: {e}")
@@ -870,9 +879,9 @@ def _generate_twisted_synopsis_data(story, acc_content, phase, characters_info_j
         "위 정보를 바탕으로 완결된 형태의 비틀린 시놉시스를 작성해주세요."
         "기존의 시놉시스에서 과도하게 벗어나지 말고, 약간만 결과를 바꿔주세요."
     )
-    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=16000, timeout=300)
+    return call_llm(sys_prompt, user_prompt, stream=True, max_tokens=30000, timeout=500)
 
-def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text, twist_synopsis=None):
+def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name, original_action_text, twisted_synopsis=None):
     sys_prompt = (
         f"현재 장면이 끝난 시점에서, 이야기가 완전히 다른 방향(반전)으로 흐르기 위해 "
         f"주인공 '{protagonist_name}'이 수행해야 할 **돌발적인 조건 행동(Twist Action)**을 정의하세요.\n"
@@ -911,7 +920,7 @@ def _create_twist_condition(node, twist_next_node, universe_id, protagonist_name
                 result_text, 
                 is_twist=True,
                 character_changes=twist_changes,
-                twist_synopsis=twist_synopsis 
+                twisted_synopsis=twisted_synopsis 
             )
         except: pass
 

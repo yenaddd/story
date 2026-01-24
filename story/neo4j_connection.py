@@ -162,10 +162,10 @@ def link_universe_to_first_scene(universe_id: str, first_scene_id: str):
     """
     run_cypher(query, {"universe_id": universe_id, "scene_id": first_scene_id})
 
-def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}", twist_synopsis: str = None):
+def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_text: str, is_twist=False, character_changes: str = "{}", twisted_synopsis: str = None):
     """
     1. Relation Label을 동적으로 결정: 'GENERAL_ACTION' 또는 'TWIST_ACTION'
-    2. TWIST_ACTION인 경우에만 'twist_synopsis' 속성을 추가
+    2. TWIST_ACTION인 경우에만 'twisted_synopsis' 속성을 추가
     """
     
     # 1. Relation Type 결정
@@ -181,10 +181,10 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
     """
 
     # 3. Twist Action일 경우 시놉시스 추가
-    # 파라미터로 받은 twist_synopsis가 있을 때만 쿼리에 추가
-    if is_twist and twist_synopsis:
+    # 파라미터로 받은 twisted_synopsis가 있을 때만 쿼리에 추가
+    if is_twist and twisted_synopsis:
         query += """
-        SET r.twist_synopsis = $twist_synopsis
+        SET r.twisted_synopsis = $twisted_synopsis
         """
 
     run_cypher(query, {
@@ -193,5 +193,5 @@ def sync_action_to_neo4j(curr_id: str, next_id: str, action_text: str, result_te
         "action_text": action_text, 
         "result_text": result_text,
         "character_changes": character_changes,
-        "twist_synopsis": twist_synopsis
+        "twisted_synopsis": twisted_synopsis
     })

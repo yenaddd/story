@@ -53,7 +53,8 @@ class StoryResetAPIView(APIView):
             StoryNode.objects.all().delete()
             NodeChoice.objects.all().delete()
             
-            # [추가] 2. ID 시퀀스 초기화 (노드 ID를 1부터 다시 시작하게 함)
+            # 2. ID 시퀀스 초기화 (노드 ID를 1부터 다시 시작하게 함) 
+            # ?? 지금 SQLite 쓰는건지 확인
             # SQLite 전용 명령입니다. 다른 DB 사용 시 변경 필요.
             with connection.cursor() as cursor:
                 cursor.execute("UPDATE sqlite_sequence SET seq = 0 WHERE name='story_storynode'")
