@@ -61,7 +61,7 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
     ON CREATE SET 
         u.setting = $world_setting,
         u.protagonist_name = $protagonist_name,
-        u.experimental = false,
+        u.experimental = true,
         u.representative_image = "",  // 이미지 링크 빈 필드
         u.created_at = datetime()
     ON MATCH SET 
@@ -74,7 +74,7 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
     })
     print(f"  [Neo4j] Universe Node Created: {universe_id}")
 
-def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synopsis: str,
+def update_universe_details_neo4j(universe_id: str, synopsis: str,
                                   title: str, description: str, detail_description: str, 
                                   estimated_play_time_min: int, estimated_play_time_max: int, 
                                   characters_info: str):
@@ -86,9 +86,7 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
     query = """
     MATCH (u:Universe {universe_id: $universe_id})
     SET 
-        u.synopsis = $synopsis,
-        u.twisted_synopsis = $twisted_synopsis,
-        u.title = $title,
+        u.synopsis = $synopsis,        u.title = $title,
         u.description = $description,           // 간단한 소개
         u.detail_description = $detail_description, // 상세 소개
         u.estimated_play_time_min = $estimated_play_time_min,
@@ -98,7 +96,6 @@ def update_universe_details_neo4j(universe_id: str, synopsis: str, twisted_synop
     run_cypher(query, {
         "universe_id": universe_id, 
         "synopsis": synopsis,
-        "twisted_synopsis": twisted_synopsis,
         "title": title,
         "description": description,
         "detail_description": detail_description,
@@ -136,12 +133,12 @@ def sync_node_to_neo4j(data: StoryNodeData):
     ON CREATE SET 
         n.title = $props.title,
         n.phase = $props.phase,
-        n.setting = $props.setting,
+        n.depth = $props.depth,
         n.description = $props.description,
         n.purpose = $props.purpose,
         n.characters = $props.characters_list,
         n.character_states = $props.character_states,
-        n.depth = $props.depth,
+        n.setting = $props.setting,
         n.created_at = datetime()
     ON MATCH SET 
         n.title = $props.title,

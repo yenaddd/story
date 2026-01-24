@@ -21,7 +21,7 @@ from .neo4j_connection import (
 
 # API 설정
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-BASE_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+BASE_URL = "https://api.fireworks.ai/inference/v1"
 MODEL_NAME = "accounts/fireworks/models/deepseek-v3p2" 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
 
@@ -213,13 +213,14 @@ def create_story_pipeline(user_world_setting):
     final_synopsis = temp_synopsis
     for placeholder, real_name in name_map.items():
         final_synopsis = final_synopsis.replace(placeholder, real_name)
-    
+    print(f"  -> Done.")
+
     # Django DB 저장
     story = Story.objects.create(user_world_setting=user_world_setting, main_cliche=matched_cliche)
     story.synopsis = final_synopsis
     story.save()
 
-    # Neo4j Universe 생성 (world_setting 대신 상세 설정 JSON 전달)
+    # Neo4j Universe 생성
     try:
         # 기존 user_world_setting 대신 상세 생성된 world_setting_json_str을 저장
         create_universe_node_neo4j(universe_id, world_setting_json_str, protagonist_name)
@@ -235,21 +236,20 @@ def create_story_pipeline(user_world_setting):
     try:
         update_universe_details_neo4j(
             universe_id=universe_id, 
-            synopsis=final_synopsis, 
-            twisted_synopsis="", 
             title=universe_details.get("title", "무제"), 
+            characters_info=characters_info_json,
             description=universe_details.get("description", ""), 
             detail_description=universe_details.get("detail_description", ""), 
-            estimated_play_time_min=universe_details.get("estimated_play_time_min", 30),
-            estimated_play_time_max=universe_details.get("estimated_play_time_max", 60),
-            characters_info=characters_info_json
+            synopsis=final_synopsis,             
+            estimated_play_time_min=int(TOTAL_DEPTH_PER_PATH*5*0.8),
+            estimated_play_time_max=int(TOTAL_DEPTH_PER_PATH*5*1.2)
         )
     except Exception as e:
         print(f"⚠️ Neo4j Details Update Failed: {e}")
         pass
 
-    # 4. 메인 경로 노드 생성
-    print("\n  [Step 5] Creating Main Path Nodes...")
+    # [Step 6] 메인 경로 노드 생성
+    print("\n  [Step 6] Creating Main Path Nodes...")
     main_nodes = _generate_path_segment(
         story, final_synopsis, protagonist_name, 
         start_node=None, universe_id=universe_id,
@@ -260,8 +260,8 @@ def create_story_pipeline(user_world_setting):
     try: link_universe_to_first_scene(universe_id, f"{universe_id}_{main_nodes[0].id}")
     except: pass
 
-    # 5. 재귀적 분기 생성 시작
-    print(f"\n🌳 [Recursive Branching Start] Quota(n): {INITIAL_BRANCH_QUOTA}")
+    # [Step 7] 재귀적 분기 생성 시작
+    print(f"\n [Step 7] 🌳 Recursive Branching Start\n Quota(n): {INITIAL_BRANCH_QUOTA}")
     _generate_recursive_story(
         story=story,
         current_path_nodes=main_nodes,
@@ -728,7 +728,9 @@ def _save_node_to_db(story, scene_data, phase_name, current_depth, universe_id):
                 setting=scene_data.get('setting', ''),
                 description=scene_data.get('description', ''),
                 purpose=scene_data.get('purpose', ''),
-                characters_list=scene_data.get('characters_list', []),
+                
+                characters_list=json.dumps(scene_data.get('characters_list', []), ensure_ascii=False),
+                
                 character_states=json.dumps(scene_data.get('character_states', {}), ensure_ascii=False),
                 depth=current_depth
             )
@@ -942,7 +944,7 @@ def _generate_universe_details(setting, synopsis):
         "3. **detail_description (상세 소개)**:\n"
         "   - 줄거리를 건조하게 요약하지 마세요. **영화 예고편의 내레이션**처럼 작성하세요.\n"
         "   - 세계관의 독특한 분위기(Atmosphere)와 주인공의 시련을 강조하여 긴장감을 조성하세요.\n\n"
-        "4. **JSON 필드**: title, description, detail_description, estimated_play_time_min (int), estimated_play_time_max (int)"
+        "4. **JSON 필드**: title, description, detail_description"
     )
     
     # 요약본이 아닌 '전체 시놉시스'를 전달하여 맥락 전체 파악 유도
