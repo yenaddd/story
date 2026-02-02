@@ -63,7 +63,9 @@ def create_universe_node_neo4j(universe_id: str, world_setting: str, protagonist
         u.protagonist_name = $protagonist_name,
         u.experimental = true,
         u.representative_image = "",  // 이미지 링크 빈 필드
-        u.created_at = datetime()
+        u.created_at = datetime(),
+        u.updated_at = datetime()
+
     ON MATCH SET 
         u.setting = $world_setting
     """
@@ -139,7 +141,8 @@ def sync_node_to_neo4j(data: StoryNodeData):
         n.characters = $props.characters_list,
         n.character_states = $props.character_states,
         n.setting = $props.setting,
-        n.created_at = datetime()
+        n.created_at = datetime(),
+        u.updated_at = datetime()
     ON MATCH SET 
         n.title = $props.title,
         n.description = $props.description,
